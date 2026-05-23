@@ -42,34 +42,40 @@ export class P2PEngine {
     this.cleanup();
     this.updateStatus('connecting');
 
-    // Standard STUN/TURN servers to punch through NATs reliably
-    const config = {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun.services.mozilla.com' },
-        // Public free TURN relay to punch through carrier symmetric NATs / mobile hotspots
-        {
-          urls: 'turn:openrelay.metered.ca:80',
-          username: 'openrelay',
-          credential: 'openrelay'
-        },
-        {
-          urls: 'turn:openrelay.metered.ca:443',
-          username: 'openrelay',
-          credential: 'openrelay'
-        },
-        {
-          urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-          username: 'openrelay',
-          credential: 'openrelay'
-        }
-      ],
+    // Configure PeerJS to connect to the public signaling server securely on port 443 with SSL
+    const peerOptions = {
+      host: '0.peerjs.com',
+      port: 443,
+      secure: true,
+      path: '/',
+      config: {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' },
+          { urls: 'stun:stun.services.mozilla.com' },
+          // Public free TURN relay to punch through carrier symmetric NATs / mobile hotspots
+          {
+            urls: 'turn:openrelay.metered.ca:80',
+            username: 'openrelay',
+            credential: 'openrelay'
+          },
+          {
+            urls: 'turn:openrelay.metered.ca:443',
+            username: 'openrelay',
+            credential: 'openrelay'
+          },
+          {
+            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+            username: 'openrelay',
+            credential: 'openrelay'
+          }
+        ],
+      }
     };
 
     try {
-      this.peer = customId ? new Peer(customId, { config }) : new Peer({ config });
+      this.peer = customId ? new Peer(customId, peerOptions) : new Peer(peerOptions);
 
       this.peer.on('open', (id) => {
         this.updateStatus('disconnected'); // Successfully registered on signaling, now idle/ready
