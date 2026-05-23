@@ -1,9 +1,10 @@
+import 'dart:async';
 import 'dart:developer' as dev;
-import 'package:socket_io_client/socket_io_client.dart' as io;
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_core/firebase_core.dart';
 
 class SignalingClient {
-  io.Socket? _socket;
-  final String serverUrl;
+  final String serverUrl; // Kept for constructor/interface compatibility
 
   // Handshake Event Callbacks
   void Function()? onConnected;
@@ -14,158 +15,173 @@ class SignalingClient {
   void Function(Map<String, dynamic> candidate)? onIceCandidateReceived;
   void Function(String error)? onError;
 
+  StreamSubscription? _roomSub;
+  StreamSubscription? _candidatesSub;
+  bool _isSender = true;
+
   SignalingClient({required this.serverUrl});
 
   /**
-   * Establishes connection to the stateless signaling socket broker
+   * Establishes connection to Firestore signaling broker
    */
-  void connect() {
-    dev.log('[SignalingClient] Connecting to signaling broker: $serverUrl');
-    
+  Future<void> connect() async {
+    dev.log('[SignalingClient] Connecting to Firestore signaling broker...');
     try {
-      _socket = io.io(
-        serverUrl,
-        io.OptionBuilder()
-            .setTransports(['websocket']) // Force WebSocket only for raw performance
-            .enableAutoConnect()
-            .build(),
-      );
-
-      _socket!.onConnect((_) {
-        dev.log('[SignalingClient] Socket connected successfully: ${_socket!.id}');
-        if (onConnected != null) onConnected!();
-      });
-
-      _socket!.onDisconnect((_) {
-        dev.log('[SignalingClient] Socket disconnected');
-        if (onDisconnected != null) onDisconnected!();
-      });
-
-      _socket!.onConnectError((err) {
-        dev.log('[SignalingClient] Connection error: $err');
-        if (onError != null) onError!('Connection error: $err');
-      });
-
-      // ==========================================
-      // WEBSOCKET HANDSHAKE PROTOCOL LISTENERS
-      // ==========================================
-
-      /**
-       * Listener: peer-joined
-       * Triggers when the target recipient registers in the room
-       */
-      _socket!.on('peer-joined', (data) {
-        if (data != null && data['peerId'] != null) {
-          final peerId = data['peerId'] as String;
-          dev.log('[SignalingClient] Remote peer joined: $peerId');
-          if (onPeerJoined != null) onPeerJoined!(peerId);
-        }
-      });
-
-      /**
-       * Listener: receive-offer
-       * Relay sender's session description down to the receiver
-       */
-      _socket!.on('receive-offer', (data) {
-        if (data != null && data['sdp'] != null) {
-          dev.log('[SignalingClient] WebRTC SDP Offer received');
-          final sdp = Map<String, dynamic>.from(data['sdp']);
-          if (onOfferReceived != null) onOfferReceived!(sdp);
-        }
-      });
-
-      /**
-       * Listener: receive-answer
-       * Relay receiver's session description back to the sender
-       */
-      _socket!.on('receive-answer', (data) {
-        if (data != null && data['sdp'] != null) {
-          dev.log('[SignalingClient] WebRTC SDP Answer received');
-          final sdp = Map<String, dynamic>.from(data['sdp']);
-          if (onAnswerReceived != null) onAnswerReceived!(sdp);
-        }
-      });
-
-      /**
-       * Listener: relay-ice
-       * Relay hole-punching configurations between both devices
-       */
-      _socket!.on('relay-ice', (data) {
-        if (data != null && data['candidate'] != null) {
-          dev.log('[SignalingClient] Remote ICE Candidate candidate received');
-          final candidate = Map<String, dynamic>.from(data['candidate']);
-          if (onIceCandidateReceived != null) onIceCandidateReceived!(candidate);
-        }
-      });
-      
+      // Lazy initialize Firebase if it has not been done yet in main
+      if (Firebase.apps.isEmpty) {
+        await Firebase.initializeApp();
+      }
+      dev.log('[SignalingClient] Firestore signaling broker initialized successfully');
+      if (onConnected != null) onConnected!();
     } catch (e) {
-      dev.log('[SignalingClient] Failed to initialize socket connection: $e');
-      if (onError != null) onError!('Initialization failed: $e');
+      dev.log('[SignalingClient] Failed to initialize Firebase: $e');
+      if (onError != null) onError!('Firebase initialization failed: $e');
     }
   }
 
-  // ==========================================
-  // PROTOCOL DISPATCH ACTIONS
-  // ==========================================
-
   /**
-   * Joins matching broker room
+   * Joins matching broker room in Firestore
    * @param roomCode The easily shareable 6-digit room key
    * @param peerId Local Client UUID
    */
-  void joinRoom(String roomCode, String peerId) {
-    if (_socket == null || !_socket!.connected) return;
+  void joinRoom(String roomCode, String peerId) async {
     dev.log('[SignalingClient] Registering room: $roomCode (Peer: $peerId)');
-    _socket!.emit('join-room', {
-      'roomCode': roomCode,
-      'peerId': peerId,
-    });
+    final roomRef = FirebaseFirestore.instance.collection('rooms').doc(roomCode);
+
+    try {
+      // Cleanup any active connections first
+      await _cleanupListeners();
+
+      // Determine sender/receiver role based on whether an offer document exists
+      final docSnap = await roomRef.get();
+      bool localIsSender = true;
+      if (docSnap.exists) {
+        final data = docSnap.data();
+        if (data != null && data.containsKey('offer')) {
+          localIsSender = false;
+        }
+      }
+      _isSender = localIsSender;
+      dev.log('[SignalingClient] Determined role for room $roomCode: ${_isSender ? "SENDER" : "RECEIVER"}');
+
+      // 1. Subscribe to changes in the room document (for SDP exchanges)
+      _roomSub = roomRef.snapshots().listen((snapshot) {
+        if (!snapshot.exists) return;
+        final data = snapshot.data();
+        if (data == null) return;
+
+        // Receiver processes incoming SDP Offer
+        if (!_isSender && data.containsKey('offer') && onOfferReceived != null) {
+          final offerMap = Map<String, dynamic>.from(data['offer']);
+          dev.log('[SignalingClient] WebRTC SDP Offer received via Firestore');
+          onOfferReceived!(offerMap);
+        }
+
+        // Sender processes incoming SDP Answer
+        if (_isSender && data.containsKey('answer') && onAnswerReceived != null) {
+          final answerMap = Map<String, dynamic>.from(data['answer']);
+          dev.log('[SignalingClient] WebRTC SDP Answer received via Firestore');
+          onAnswerReceived!(answerMap);
+
+          // Once answer is received, it means receiver joined! Trigger callback
+          if (onPeerJoined != null) {
+            onPeerJoined!('receiver');
+          }
+        }
+      }, onError: (err) {
+        dev.log('[SignalingClient] Firestore Room Error: $err');
+        if (onError != null) onError!('Room sync error: $err');
+      });
+
+      // 2. Subscribe to remote ICE Candidates
+      final oppositeCollection = _isSender ? 'receiverCandidates' : 'senderCandidates';
+      _candidatesSub = roomRef.collection(oppositeCollection).snapshots().listen((snapshot) {
+        for (var change in snapshot.docChanges) {
+          if (change.type == DocumentChangeType.added) {
+            final candidateData = change.doc.data();
+            if (candidateData != null && onIceCandidateReceived != null) {
+              dev.log('[SignalingClient] Remote ICE Candidate received via Firestore');
+              onIceCandidateReceived!(Map<String, dynamic>.from(candidateData));
+            }
+          }
+        }
+      }, onError: (err) {
+        dev.log('[SignalingClient] Firestore Candidates Sync Error: $err');
+      });
+
+    } catch (e) {
+      dev.log('[SignalingClient] Failed to join room: $e');
+      if (onError != null) onError!('Failed to join room: $e');
+    }
   }
 
   /**
-   * Emits WebRTC Offer SDP
+   * Emits WebRTC Offer SDP by writing to Firestore
    */
-  void sendOffer(String roomCode, Map<String, dynamic> sdp) {
-    if (_socket == null || !_socket!.connected) return;
-    dev.log('[SignalingClient] Dispatching WebRTC Offer SDP to room: $roomCode');
-    _socket!.emit('sdp-offer', {
-      'roomCode': roomCode,
-      'sdp': sdp,
-    });
+  void sendOffer(String roomCode, Map<String, dynamic> sdp) async {
+    dev.log('[SignalingClient] Dispatching WebRTC Offer SDP to room doc: $roomCode');
+    final roomRef = FirebaseFirestore.instance.collection('rooms').doc(roomCode);
+    try {
+      await roomRef.set({
+        'offer': sdp,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      dev.log('[SignalingClient] Error dispatching WebRTC offer: $e');
+    }
   }
 
   /**
-   * Emits WebRTC Answer SDP
+   * Emits WebRTC Answer SDP by updating Firestore room
    */
-  void sendAnswer(String roomCode, Map<String, dynamic> sdp) {
-    if (_socket == null || !_socket!.connected) return;
-    dev.log('[SignalingClient] Dispatching WebRTC Answer SDP to room: $roomCode');
-    _socket!.emit('sdp-answer', {
-      'roomCode': roomCode,
-      'sdp': sdp,
-    });
+  void sendAnswer(String roomCode, Map<String, dynamic> sdp) async {
+    dev.log('[SignalingClient] Dispatching WebRTC Answer SDP to room doc: $roomCode');
+    final roomRef = FirebaseFirestore.instance.collection('rooms').doc(roomCode);
+    try {
+      await roomRef.update({
+        'answer': sdp,
+      });
+    } catch (e) {
+      dev.log('[SignalingClient] Error dispatching WebRTC answer: $e');
+    }
   }
 
   /**
-   * Emits network ICE Candidate
+   * Emits network ICE Candidate by writing to corresponding subcollection
    */
-  void sendIceCandidate(String roomCode, Map<String, dynamic> candidate) {
-    if (_socket == null || !_socket!.connected) return;
-    dev.log('[SignalingClient] Dispatching local ICE Candidate to room: $roomCode');
-    _socket!.emit('ice-candidate', {
-      'roomCode': roomCode,
-      'candidate': candidate,
-    });
+  void sendIceCandidate(String roomCode, Map<String, dynamic> candidate) async {
+    dev.log('[SignalingClient] Dispatching local ICE Candidate to Firestore: $roomCode');
+    final roomRef = FirebaseFirestore.instance.collection('rooms').doc(roomCode);
+    
+    try {
+      final subCollection = _isSender ? 'senderCandidates' : 'receiverCandidates';
+      await roomRef.collection(subCollection).add(candidate);
+    } catch (e) {
+      dev.log('[SignalingClient] Error dispatching ICE candidate: $e');
+    }
   }
 
   /**
-   * Terminate active socket broker connections
+   * Clean up active Firestore listeners
+   */
+  Future<void> _cleanupListeners() async {
+    if (_roomSub != null) {
+      await _roomSub!.cancel();
+      _roomSub = null;
+    }
+    if (_candidatesSub != null) {
+      await _candidatesSub!.cancel();
+      _candidatesSub = null;
+    }
+  }
+
+  /**
+   * Terminate active signaling client
    */
   void disconnect() {
-    if (_socket != null) {
-      _socket!.disconnect();
-      _socket = null;
+    _cleanupListeners().then((_) {
       dev.log('[SignalingClient] Disconnected manually');
-    }
+      if (onDisconnected != null) onDisconnected!();
+    });
   }
 }

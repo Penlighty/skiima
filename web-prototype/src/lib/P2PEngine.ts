@@ -1,5 +1,14 @@
-import { Peer } from 'peerjs';
-import type { DataConnection } from 'peerjs';
+import { db } from './firebase';
+import {
+  doc,
+  setDoc,
+  updateDoc,
+  onSnapshot,
+  collection,
+  addDoc,
+  getDoc,
+  deleteDoc
+} from 'firebase/firestore';
 
 export interface FileMetadata {
   name: string;
@@ -20,9 +29,13 @@ const CHUNK_SIZE = 64 * 1024; // 64KB chunks
 const BUFFER_THRESHOLD = 1024 * 1024; // 1MB buffer threshold for backpressure
 
 export class P2PEngine {
-  private peer: Peer | null = null;
-  private connection: DataConnection | null = null;
+  private pc: RTCPeerConnection | null = null;
+  private dataChannel: RTCDataChannel | null = null;
+  private roomCode: string | null = null;
 
+  // Firestore listeners unsubscribe handles
+  private unsubscribeRoom: (() => void) | null = null;
+  private unsubscribeCandidates: (() => void) | null = null;
 
   // Callbacks for UI updates
   public onStatusChange?: (status: ConnectionStatus) => void;
@@ -35,125 +48,271 @@ export class P2PEngine {
   constructor() {}
 
   /**
-   * Initializes the PeerJS client
-   * @param customId Optional custom peer ID (used by receiver to connect to sender)
+   * Initializes the native WebRTC peer connection (Sender Role)
+   * @param customId The generated 6-digit room code
    */
   public initialize(customId?: string): void {
     this.cleanup();
     this.updateStatus('connecting');
 
-    // Configure PeerJS to connect to the public signaling server securely on port 443 with SSL
+    if (!customId) {
+      if (this.onError) this.onError('Room code is required.');
+      this.updateStatus('disconnected');
+      return;
+    }
+
+    const roomCode = customId;
+    this.roomCode = roomCode;
+
     const peerOptions = {
-      host: '0.peerjs.com',
-      port: 443,
-      secure: true,
-      path: '/',
-      config: {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun2.l.google.com:19302' },
-          { urls: 'stun:stun.services.mozilla.com' },
-          // Public free TURN relay to punch through carrier symmetric NATs / mobile hotspots
-          {
-            urls: 'turn:openrelay.metered.ca:80',
-            username: 'openrelay',
-            credential: 'openrelay'
-          },
-          {
-            urls: 'turn:openrelay.metered.ca:443',
-            username: 'openrelay',
-            credential: 'openrelay'
-          },
-          {
-            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-            username: 'openrelay',
-            credential: 'openrelay'
-          }
-        ],
-      }
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun.services.mozilla.com' },
+        // Public free TURN relay to punch through carrier symmetric NATs / mobile hotspots
+        {
+          urls: 'turn:openrelay.metered.ca:80',
+          username: 'openrelay',
+          credential: 'openrelay'
+        },
+        {
+          urls: 'turn:openrelay.metered.ca:443',
+          username: 'openrelay',
+          credential: 'openrelay'
+        },
+        {
+          urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+          username: 'openrelay',
+          credential: 'openrelay'
+        }
+      ]
     };
 
     try {
-      this.peer = customId ? new Peer('skiima-share-' + customId, peerOptions) : new Peer(peerOptions);
+      const pc = new RTCPeerConnection(peerOptions);
+      this.pc = pc;
 
-      this.peer.on('open', (id) => {
-        this.updateStatus('disconnected'); // Successfully registered on signaling, now idle/ready
-        if (this.onPeerIdReady) {
-          this.onPeerIdReady(id.replace('skiima-share-', ''));
-        }
-      });
+      // Create the WebRTC DataChannel
+      const dc = pc.createDataChannel('skiima-channel', { ordered: true });
+      this.setupDataChannel(dc);
 
-      this.peer.on('connection', (conn) => {
-        // Only accept one connection in our prototype
-        if (this.connection) {
-          conn.close();
-          return;
+      // Write ICE Candidates to Firestore rooms/{roomCode}/senderCandidates
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          const candidateRef = collection(db, 'rooms', roomCode, 'senderCandidates');
+          addDoc(candidateRef, event.candidate.toJSON()).catch((err: any) => {
+            console.error('Failed to write local sender ICE candidate:', err);
+          });
         }
-        this.setupConnection(conn);
-      });
+      };
 
-      this.peer.on('error', (err) => {
-        console.error('PeerJS error:', err);
-        if (this.onError) {
-          this.onError(err.message || 'Peer network failure.');
+      // Listen for connection state changes
+      pc.onconnectionstatechange = () => {
+        console.log('[WebRTC] Connection state changed:', pc.connectionState);
+        if (pc.connectionState === 'connected') {
+          this.detectIceCandidateType(pc);
+        } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+          this.updateStatus('disconnected');
         }
-        this.updateStatus('disconnected');
-      });
+      };
+
+      // Create the WebRTC Session Offer
+      (async () => {
+        try {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+
+          // Write offer SDP to Firestore
+          const roomDocRef = doc(db, 'rooms', roomCode);
+          await setDoc(roomDocRef, {
+            offer: {
+              sdp: offer.sdp,
+              type: offer.type
+            },
+            createdAt: new Date().toISOString()
+          });
+
+          if (this.onPeerIdReady) {
+            this.onPeerIdReady(roomCode);
+          }
+
+          this.unsubscribeRoom = onSnapshot(roomDocRef, (snapshot: any) => {
+            const data = snapshot.data();
+            if (data && data.answer && !pc.currentRemoteDescription) {
+              const answer = new RTCSessionDescription(data.answer);
+              pc.setRemoteDescription(answer)
+                .then(() => {
+                  console.log('[WebRTC] Set remote Answer SDP successfully');
+                  // Now listen to remote receiver's ICE candidates
+                  this.listenToRemoteCandidates(roomCode, 'receiverCandidates');
+                })
+                .catch((err: any) => {
+                  console.error('Failed to set remote description:', err);
+                });
+            }
+          });
+
+        } catch (err: any) {
+          console.error('[WebRTC] Error during negotiation initialization:', err);
+          if (this.onError) this.onError(err.message || 'Failed to negotiate WebRTC offer.');
+          this.updateStatus('disconnected');
+        }
+      })();
+
     } catch (e: any) {
+      console.error('[WebRTC] Initialization failed:', e);
       if (this.onError) {
-        this.onError(e.message || 'Failed to instantiate PeerJS.');
+        this.onError(e.message || 'Failed to instantiate RTCPeerConnection.');
       }
       this.updateStatus('disconnected');
     }
   }
 
   /**
-   * Connects as a receiver to the sender's peer ID
-   * @param senderPeerId The short code generated by the sender
+   * Connects as a receiver to the sender's room code
+   * @param senderPeerId The short 6-digit code generated by the sender
    */
   public connectToPeer(senderPeerId: string): void {
-    const doConnect = () => {
-      this.updateStatus('connecting');
-      try {
-        const conn = this.peer!.connect('skiima-share-' + senderPeerId, {
-          reliable: true,
-        });
-        this.setupConnection(conn);
-      } catch (err: any) {
-        if (this.onError) {
-          this.onError(err.message || 'Failed to initiate P2P channel.');
+    this.cleanup();
+    this.updateStatus('connecting');
+
+    const roomCode = senderPeerId;
+    this.roomCode = roomCode;
+
+    const peerOptions = {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun.services.mozilla.com' },
+        {
+          urls: 'turn:openrelay.metered.ca:80',
+          username: 'openrelay',
+          credential: 'openrelay'
+        },
+        {
+          urls: 'turn:openrelay.metered.ca:443',
+          username: 'openrelay',
+          credential: 'openrelay'
+        },
+        {
+          urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+          username: 'openrelay',
+          credential: 'openrelay'
         }
-        this.updateStatus('disconnected');
-      }
+      ]
     };
 
-    if (!this.peer) {
-      this.initialize();
-    }
+    try {
+      const pc = new RTCPeerConnection(peerOptions);
+      this.pc = pc;
 
-    if (this.peer!.open) {
-      doConnect();
-    } else {
-      this.updateStatus('connecting');
-      this.peer!.once('open', () => {
-        doConnect();
-      });
-      this.peer!.once('error', (err) => {
-        if (this.onError) {
-          this.onError('Could not connect to signaling server: ' + err.message);
+      // Handle receiving WebRTC DataChannel
+      pc.ondatachannel = (event) => {
+        console.log('[WebRTC] DataChannel received from sender');
+        this.setupDataChannel(event.channel);
+      };
+
+      // Write ICE Candidates to Firestore rooms/{roomCode}/receiverCandidates
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          const candidateRef = collection(db, 'rooms', roomCode, 'receiverCandidates');
+          addDoc(candidateRef, event.candidate.toJSON()).catch((err: any) => {
+            console.error('Failed to write local receiver ICE candidate:', err);
+          });
         }
-        this.updateStatus('disconnected');
-      });
+      };
+
+      // Listen for connection state changes
+      pc.onconnectionstatechange = () => {
+        console.log('[WebRTC] Connection state changed:', pc.connectionState);
+        if (pc.connectionState === 'connected') {
+          this.detectIceCandidateType(pc);
+        } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+          this.updateStatus('disconnected');
+        }
+      };
+
+      // Retrieve Offer SDP from Firestore and generate Answer SDP
+      (async () => {
+        try {
+          const roomDocRef = doc(db, 'rooms', roomCode);
+          const roomSnapshot = await getDoc(roomDocRef);
+
+          if (!roomSnapshot.exists()) {
+            throw new Error('Connection room code not found. Please double check.');
+          }
+
+          const data = roomSnapshot.data();
+          if (!data || !data.offer) {
+            throw new Error('Room is active, but the offer description is missing.');
+          }
+
+          const offer = new RTCSessionDescription(data.offer);
+          await pc.setRemoteDescription(offer);
+
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+
+          // Update room with Answer SDP
+          await updateDoc(roomDocRef, {
+            answer: {
+              sdp: answer.sdp,
+              type: answer.type
+            }
+          });
+
+          // Listen to remote sender's ICE candidates
+          this.listenToRemoteCandidates(roomCode, 'senderCandidates');
+
+        } catch (err: any) {
+          console.error('[WebRTC] Receiver connection negotiation failed:', err);
+          if (this.onError) this.onError(err.message || 'Failed to complete handshake.');
+          this.updateStatus('disconnected');
+        }
+      })();
+
+    } catch (e: any) {
+      console.error('[WebRTC] Receiver initialization failed:', e);
+      if (this.onError) {
+        this.onError(e.message || 'Failed to instantiate RTCPeerConnection.');
+      }
+      this.updateStatus('disconnected');
     }
   }
 
   /**
-   * Sends a file to the connected peer
+   * Sets up real-time sync for remote ICE candidates
+   */
+  private listenToRemoteCandidates(roomCode: string, collectionName: 'senderCandidates' | 'receiverCandidates'): void {
+    const candidateRef = collection(db, 'rooms', roomCode, collectionName);
+
+    if (this.unsubscribeCandidates) {
+      this.unsubscribeCandidates();
+    }
+
+    this.unsubscribeCandidates = onSnapshot(candidateRef, (snapshot: any) => {
+      snapshot.docChanges().forEach((change: any) => {
+        if (change.type === 'added') {
+          const candidateData = change.doc.data();
+          if (this.pc) {
+            const candidate = new RTCIceCandidate(candidateData as RTCIceCandidateInit);
+            this.pc.addIceCandidate(candidate).catch((err: any) => {
+              console.warn('[WebRTC] Failed to add remote ICE candidate:', err);
+            });
+          }
+        }
+      });
+    });
+  }
+
+  /**
+   * Sends a file to the connected peer over the RTCDataChannel
    * @param file The file object from input or dropzone
    */
   public async sendFile(file: File): Promise<void> {
-    if (!this.connection) {
+    if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
       throw new Error('No active peer connection');
     }
 
@@ -163,8 +322,8 @@ export class P2PEngine {
       type: file.type || 'application/octet-stream',
     };
 
-    // 1. Send file metadata
-    this.connection.send({ type: 'metadata', data: metadata });
+    // 1. Send file metadata as JSON string
+    this.dataChannel.send(JSON.stringify({ type: 'metadata', data: metadata }));
 
     // 2. Start chunked file transmission
     const fileReader = new FileReader();
@@ -174,8 +333,6 @@ export class P2PEngine {
     
     let startTime = Date.now();
     let lastStatsTime = Date.now();
-
-    const dataChannel = (this.connection as any).dataChannel as RTCDataChannel;
 
     const readNextChunk = () => {
       const slice = file.slice(offset, offset + CHUNK_SIZE);
@@ -187,13 +344,13 @@ export class P2PEngine {
         const buffer = e.target.result;
 
         // Apply backpressure using RTCDataChannel's bufferedAmount
-        if (dataChannel && dataChannel.bufferedAmount > BUFFER_THRESHOLD) {
-          await this.waitBufferLow(dataChannel);
+        if (this.dataChannel && this.dataChannel.bufferedAmount > BUFFER_THRESHOLD) {
+          await this.waitBufferLow(this.dataChannel);
         }
 
         // Send the raw binary chunk directly
-        if (this.connection && this.connection.open) {
-          this.connection.send(buffer);
+        if (this.dataChannel && this.dataChannel.readyState === 'open') {
+          this.dataChannel.send(buffer);
 
           offset += buffer.byteLength;
           chunkIndex++;
@@ -220,8 +377,8 @@ export class P2PEngine {
           if (offset < totalSize) {
             readNextChunk();
           } else {
-            // Signal completed transfer
-            this.connection.send({ type: 'done' });
+            // Signal completed transfer as JSON string
+            this.dataChannel.send(JSON.stringify({ type: 'done' }));
             if (this.onTransferComplete) {
               this.onTransferComplete();
             }
@@ -266,122 +423,121 @@ export class P2PEngine {
   }
 
   /**
-   * Configures data connection listeners
+   * Configures native RTCDataChannel listeners
    */
-  private setupConnection(conn: DataConnection): void {
-    this.connection = conn;
+  private setupDataChannel(dc: RTCDataChannel): void {
+    this.dataChannel = dc;
+    dc.binaryType = 'arraybuffer';
 
-    conn.on('open', () => {
-      // Determine if we are running in P2P or TURN relay mode
-      let pc: RTCPeerConnection | null = null;
-      try {
-        const peerInstance = this.peer as any;
-        const conns = peerInstance._connections?.[conn.peer] || peerInstance.connections?.[conn.peer];
-        if (Array.isArray(conns) && conns[0]) {
-          pc = conns[0].peerConnection;
-        }
-      } catch (e) {
-        console.error('Failed to extract PeerConnection:', e);
+    dc.onopen = () => {
+      console.log('[WebRTC] RTCDataChannel opened successfully');
+      
+      // Clean up the signaling Firestore room now that we are directly connected
+      if (this.roomCode) {
+        this.cleanupRoomDoc(this.roomCode);
       }
+    };
 
-      if (pc) {
-        // Fallback detection based on ICE candidate type
-        this.detectIceCandidateType(pc);
-      } else {
-        this.updateStatus('connected-p2p');
+    dc.onclose = () => {
+      console.log('[WebRTC] RTCDataChannel closed');
+      this.updateStatus('disconnected');
+      this.cleanup();
+    };
+
+    dc.onerror = (err) => {
+      console.error('[WebRTC] RTCDataChannel error:', err);
+      if (this.onError) {
+        this.onError('P2P connection experienced an engine failure.');
       }
-    });
+      this.updateStatus('disconnected');
+    };
 
     let receivedMetadata: FileMetadata | null = null;
-    let receivedChunks: any[] = [];
+    let receivedChunks: ArrayBuffer[] = [];
     let bytesReceived = 0;
     let startTime = Date.now();
     let lastStatsTime = Date.now();
 
-    conn.on('data', (payload: any) => {
+    dc.onmessage = (event) => {
+      const payload = event.data;
       if (!payload) return;
 
-      // Detect binary chunks (ArrayBuffer or typed array views)
-      let isChunk = false;
-      let chunkBuffer: any = null;
-
+      // Handle binary file chunks
       if (payload instanceof ArrayBuffer) {
-        isChunk = true;
-        chunkBuffer = payload;
-      } else if (payload instanceof Uint8Array) {
-        isChunk = true;
-        chunkBuffer = payload.buffer;
-      } else if (payload && payload.buffer instanceof ArrayBuffer) {
-        isChunk = true;
-        chunkBuffer = payload.buffer;
-      }
+        if (receivedMetadata) {
+          receivedChunks.push(payload);
+          bytesReceived += payload.byteLength;
 
-      if (isChunk && chunkBuffer && receivedMetadata) {
-        receivedChunks.push(chunkBuffer);
-        bytesReceived += chunkBuffer.byteLength;
+          const now = Date.now();
+          if (now - lastStatsTime >= 200 || bytesReceived === receivedMetadata.size) {
+            const timePassed = (now - startTime) / 1000;
+            const currentSpeed = bytesReceived / timePassed;
+            const remainingBytes = receivedMetadata.size - bytesReceived;
+            const timeRemaining = remainingBytes / (currentSpeed || 1);
 
-        const now = Date.now();
-        if (now - lastStatsTime >= 200 || bytesReceived === receivedMetadata.size) {
-          const timePassed = (now - startTime) / 1000;
-          const currentSpeed = bytesReceived / timePassed;
-          const remainingBytes = receivedMetadata.size - bytesReceived;
-          const timeRemaining = remainingBytes / (currentSpeed || 1);
-
-          if (this.onProgress) {
-            this.onProgress({
-              progress: Math.min((bytesReceived / receivedMetadata.size) * 100, 100),
-              speed: currentSpeed,
-              bytesTransferred: bytesReceived,
-              timeRemaining: Math.max(0, Math.round(timeRemaining)),
-            });
+            if (this.onProgress) {
+              this.onProgress({
+                progress: Math.min((bytesReceived / receivedMetadata.size) * 100, 100),
+                speed: currentSpeed,
+                bytesTransferred: bytesReceived,
+                timeRemaining: Math.max(0, Math.round(timeRemaining)),
+              });
+            }
+            lastStatsTime = now;
           }
-          lastStatsTime = now;
         }
         return;
       }
 
-      // Handle control messages
-      if (typeof payload === 'object' && payload.type) {
-        switch (payload.type) {
-          case 'metadata':
-            receivedMetadata = payload.data as FileMetadata;
-            receivedChunks = [];
-            bytesReceived = 0;
-            startTime = Date.now();
-            lastStatsTime = Date.now();
-            if (this.onMetadataReceived) {
-              this.onMetadataReceived(receivedMetadata);
-            }
-            break;
+      // Handle string control payloads (serialized JSON)
+      if (typeof payload === 'string') {
+        try {
+          const control = JSON.parse(payload);
+          if (control && control.type) {
+            switch (control.type) {
+              case 'metadata':
+                receivedMetadata = control.data as FileMetadata;
+                receivedChunks = [];
+                bytesReceived = 0;
+                startTime = Date.now();
+                lastStatsTime = Date.now();
+                if (this.onMetadataReceived) {
+                  this.onMetadataReceived(receivedMetadata);
+                }
+                break;
 
-          case 'done':
-            if (receivedMetadata && receivedChunks.length > 0) {
-              // Reassemble the incoming file chunks into a single Blob
-              const fileBlob = new Blob(receivedChunks, { type: receivedMetadata.type });
-              const downloadUrl = URL.createObjectURL(fileBlob);
-              if (this.onTransferComplete) {
-                this.onTransferComplete(downloadUrl);
-              }
-              // Clean up buffer
-              receivedChunks = [];
+              case 'done':
+                if (receivedMetadata && receivedChunks.length > 0) {
+                  // Reassemble the incoming file chunks into a single Blob
+                  const fileBlob = new Blob(receivedChunks, { type: receivedMetadata.type });
+                  const downloadUrl = URL.createObjectURL(fileBlob);
+                  if (this.onTransferComplete) {
+                    this.onTransferComplete(downloadUrl);
+                  }
+                  // Clean up buffer
+                  receivedChunks = [];
+                }
+                break;
             }
-            break;
+          }
+        } catch (e) {
+          console.error('[WebRTC] Failed to parse control payload:', e);
         }
       }
-    });
+    };
+  }
 
-    conn.on('close', () => {
-      this.updateStatus('disconnected');
-      this.connection = null;
-    });
-
-    conn.on('error', (err) => {
-      console.error('Connection error:', err);
-      if (this.onError) {
-        this.onError('P2P connection experienced a handshake issue.');
-      }
-      this.updateStatus('disconnected');
-    });
+  /**
+   * Deletes the Firestore signaling room document
+   */
+  private async cleanupRoomDoc(roomCode: string): Promise<void> {
+    try {
+      const roomDocRef = doc(db, 'rooms', roomCode);
+      await deleteDoc(roomDocRef);
+      console.log('[Signaling] Stateless Firestore room deleted successfully:', roomCode);
+    } catch (e) {
+      console.warn('[Signaling] Room cleanup doc skipped:', e);
+    }
   }
 
   /**
@@ -419,14 +575,23 @@ export class P2PEngine {
    * Disconnects and cleans up all active peer allocations
    */
   public cleanup(): void {
-    if (this.connection) {
-      this.connection.close();
-      this.connection = null;
+    if (this.unsubscribeRoom) {
+      this.unsubscribeRoom();
+      this.unsubscribeRoom = null;
     }
-    if (this.peer) {
-      this.peer.destroy();
-      this.peer = null;
+    if (this.unsubscribeCandidates) {
+      this.unsubscribeCandidates();
+      this.unsubscribeCandidates = null;
     }
+    if (this.dataChannel) {
+      this.dataChannel.close();
+      this.dataChannel = null;
+    }
+    if (this.pc) {
+      this.pc.close();
+      this.pc = null;
+    }
+    this.roomCode = null;
     this.updateStatus('disconnected');
   }
 

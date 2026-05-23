@@ -157,7 +157,7 @@ function App() {
             <Globe size={16} /> Web
           </a>
         </div>
-        <p>© 2026 Skiima Share. Built with WebRTC, PeerJS & React.</p>
+        <p>© 2026 Skiima Share. Built with WebRTC, Firebase & React.</p>
       </footer>
     </>
   );

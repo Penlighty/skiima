@@ -21,6 +21,10 @@ dependencies:
   sqflite: ^2.3.0
   path: ^1.8.3
 
+  # Firebase Serverless Signaling Broker
+  firebase_core: ^2.27.0
+  cloud_firestore: ^4.15.8
+
   # Cryptographic SHA-256 chunk integrity verification
   crypto: ^3.0.3
 
