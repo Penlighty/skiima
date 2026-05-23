@@ -1,0 +1,28 @@
+# Dependency directories
+node_modules/
+.npm/
+
+# System / IDE files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
+
+# Web Prototype build outputs & caches
+web-prototype/node_modules/
+web-prototype/dist/
+web-prototype/.vite/
+
+# Signaling Server build outputs & caches
+signaling-server/node_modules/
+signaling-server/dist/
+
+# Flutter build outputs & compile caches
+skiima-app/.dart_tool/
+skiima-app/build/
+skiima-app/.flutter-plugins
+skiima-app/.flutter-plugins-dependencies
+skiima-app/.metadata
+skiima-app/.packages
+skiima-app/pubspec.lock

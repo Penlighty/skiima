@@ -1,0 +1,39 @@
+name: skiima
+description: Cross-platform secure direct P2P file sharing application.
+version: 1.0.0+1
+
+publish_to: 'none'
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # WebRTC Direct P2P Transport Layer
+  flutter_webrtc: ^0.10.4
+
+  # Stateless Socket.io WebSocket signaling
+  socket_io_client: ^3.1.1
+
+  # SQLite Persistence for manifest byte-offset resumption & contact directories
+  sqflite: ^2.3.0
+  path: ^1.8.3
+
+  # Cryptographic SHA-256 chunk integrity verification
+  crypto: ^3.0.3
+
+  # Unique Client/Peer ID generation
+  uuid: ^4.3.3
+
+  # Modern UI icons
+  cupertino_icons: ^1.0.6
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
