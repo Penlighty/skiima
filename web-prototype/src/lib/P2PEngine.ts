@@ -75,12 +75,12 @@ export class P2PEngine {
     };
 
     try {
-      this.peer = customId ? new Peer(customId, peerOptions) : new Peer(peerOptions);
+      this.peer = customId ? new Peer('skiima-share-' + customId, peerOptions) : new Peer(peerOptions);
 
       this.peer.on('open', (id) => {
         this.updateStatus('disconnected'); // Successfully registered on signaling, now idle/ready
         if (this.onPeerIdReady) {
-          this.onPeerIdReady(id);
+          this.onPeerIdReady(id.replace('skiima-share-', ''));
         }
       });
 
@@ -116,7 +116,7 @@ export class P2PEngine {
     const doConnect = () => {
       this.updateStatus('connecting');
       try {
-        const conn = this.peer!.connect(senderPeerId, {
+        const conn = this.peer!.connect('skiima-share-' + senderPeerId, {
           reliable: true,
         });
         this.setupConnection(conn);
