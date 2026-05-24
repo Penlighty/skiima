@@ -37,15 +37,31 @@ const BUFFER_THRESHOLD = 512 * 1024; // 512KB buffer threshold for backpressure
  * Server URLs are taken directly from Metered's "Show ICE Servers Array" output.
  */
 function buildIceServers(): RTCIceServer[] {
-  // We completely bypass and avoid setting up TURN relay servers.
-  // Direct P2P transfers are 100% free and only require STUN servers.
-  // This guarantees that zero TURN bandwidth or allocation quota is ever consumed on Metered.ca.
-  return [
+  const username = import.meta.env.VITE_METERED_USERNAME;
+  const credential = import.meta.env.VITE_METERED_CREDENTIAL;
+
+  const servers: RTCIceServer[] = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun.relay.metered.ca:80' }
+    { urls: 'stun:stun2.l.google.com:19302' }
   ];
+
+  if (username && credential) {
+    servers.push({
+      urls: [
+        'turn:global.turn.metered.ca:80?transport=udp',
+        'turn:global.turn.metered.ca:443?transport=tcp',
+        'turns:global.turn.metered.ca:443?transport=tcp'
+      ],
+      username: username,
+      credential: credential
+    });
+  } else {
+    // Fallback STUN in case credentials are not defined
+    servers.push({ urls: 'stun:stun.relay.metered.ca:80' });
+  }
+
+  return servers;
 }
 
 export class P2PEngine {
