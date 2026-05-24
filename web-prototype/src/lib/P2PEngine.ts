@@ -568,19 +568,21 @@ export class P2PEngine {
   private async detectIceCandidateType(pc: RTCPeerConnection): Promise<void> {
     try {
       const stats = await pc.getStats();
+      // Convert RTCStatsReport to a plain Map for TypeScript-safe .get() access
+      const statsMap = new Map<string, RTCStats>(stats as unknown as Map<string, RTCStats>);
       let activeCandidatePairId = '';
       
       stats.forEach((report) => {
-        if (report.type === 'transport' && report.selectedCandidatePairId) {
-          activeCandidatePairId = report.selectedCandidatePairId;
+        if (report.type === 'transport' && (report as any).selectedCandidatePairId) {
+          activeCandidatePairId = (report as any).selectedCandidatePairId;
         }
       });
 
       let isRelay = false;
       if (activeCandidatePairId) {
-        const candidatePair = stats.get(activeCandidatePairId);
+        const candidatePair = statsMap.get(activeCandidatePairId) as any;
         if (candidatePair && candidatePair.remoteCandidateId) {
-          const remoteCandidate = stats.get(candidatePair.remoteCandidateId);
+          const remoteCandidate = statsMap.get(candidatePair.remoteCandidateId) as any;
           if (remoteCandidate && remoteCandidate.candidateType === 'relay') {
             isRelay = true;
           }
