@@ -83,7 +83,7 @@ function buildIceServers(): RTCIceServer[] {
 export class P2PEngine {
   private pc: RTCPeerConnection | null = null;
   private dataChannel: RTCDataChannel | null = null;
-  private roomCode: string | null = null;
+  public roomCode: string | null = null;
 
   // Firestore listeners unsubscribe handles
   private unsubscribeRoom: (() => void) | null = null;

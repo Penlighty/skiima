@@ -8,12 +8,16 @@ interface SenderCardProps {
   engine: P2PEngine;
   connectionStatus: ConnectionStatus;
   setConnectionStatus: (status: ConnectionStatus) => void;
+  initialFile?: File | null;
+  onClearInitialFile?: () => void;
 }
 
 export const SenderCard: React.FC<SenderCardProps> = ({
   engine,
   connectionStatus,
   setConnectionStatus,
+  initialFile,
+  onClearInitialFile,
 }) => {
   const [file, setFile] = useState<File | null>(null);
   const [roomCode, setRoomCode] = useState<string>('');
@@ -86,6 +90,43 @@ export const SenderCard: React.FC<SenderCardProps> = ({
       // Don't fully cleanup engine on card change to allow keep-alive
     };
   }, [engine, file, isTransferring, transferDone]);
+
+  // Load existing room code if the P2PEngine is already pre-initialized
+  useEffect(() => {
+    if (engine.roomCode) {
+      setRoomCode(engine.roomCode);
+    }
+  }, [engine.roomCode]);
+
+  // Load quick-send initial file on mount/change
+  useEffect(() => {
+    if (initialFile) {
+      setFile(initialFile);
+      setErrorMsg('');
+      setTransferDone(false);
+      setStats(null);
+      if (onClearInitialFile) {
+        onClearInitialFile();
+      }
+    }
+  }, [initialFile, onClearInitialFile]);
+
+  // Resilient trigger to ensure file transfer starts when BOTH file is loaded
+  // AND WebRTC connection becomes fully connected.
+  useEffect(() => {
+    if (
+      (connectionStatus === 'connected-p2p' || connectionStatus === 'connected-turn') &&
+      file &&
+      !isTransferring &&
+      !transferDone
+    ) {
+      setIsTransferring(true);
+      engine.sendFile(file).catch((e) => {
+        setErrorMsg(e.message || 'File transfer initialization failed.');
+        setIsTransferring(false);
+      });
+    }
+  }, [connectionStatus, file, isTransferring, transferDone, engine]);
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();

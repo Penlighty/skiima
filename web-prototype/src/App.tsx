@@ -27,6 +27,7 @@ function App() {
   const [outboundMetadata, setOutboundMetadata] = useState<{ name: string; size: number } | null>(null);
   const [outboundTargetName, setOutboundTargetName] = useState<string>('');
   const [outboundCancelFn, setOutboundCancelFn] = useState<(() => void) | null>(null);
+  const [quickSendFile, setQuickSendFile] = useState<File | null>(null);
 
   // Maintain a persistent P2PEngine singleton across tab views
   const engine = useMemo(() => new P2PEngine(), []);
@@ -130,6 +131,7 @@ function App() {
 
     // 1. Clean up active engine connections
     engine.cleanup();
+    setQuickSendFile(file);
 
     // 2. Generate random 6-digit room code
     const code = Math.floor(100000 + Math.random() * 900000).toString();
@@ -347,6 +349,8 @@ function App() {
             engine={engine}
             connectionStatus={connectionStatus}
             setConnectionStatus={setConnectionStatus}
+            initialFile={quickSendFile}
+            onClearInitialFile={() => setQuickSendFile(null)}
           />
         )}
         
