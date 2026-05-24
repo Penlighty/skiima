@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
-import { Download, Zap, Info, Shield, Globe, History, User, Edit2, Check, X, Radio, File, AlertTriangle, ArrowUpRight, ArrowDownLeft, UploadCloud, DownloadCloud, ChevronRight, MessageCircle } from 'lucide-react';
+import { Download, Zap, Info, Shield, Globe, History, User, Edit2, Check, X, Radio, File, AlertTriangle, ArrowUpRight, ArrowDownLeft, UploadCloud, DownloadCloud, ChevronRight, MessageCircle, Sun, Moon, Monitor } from 'lucide-react';
 import { P2PEngine } from './lib/P2PEngine';
 import type { ConnectionStatus } from './lib/P2PEngine';
 import { SenderCard } from './components/SenderCard';
@@ -10,10 +10,16 @@ import { historyDb } from './lib/historyDb';
 import type { ContactItem, HistoryItem } from './lib/historyDb';
 
 type ViewType = 'dashboard' | 'send' | 'receive' | 'profile' | 'history_full';
+type ThemeMode = 'light' | 'dark' | 'system';
 
 function App() {
   const [activeView, setActiveView] = useState<ViewType>('dashboard');
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
+
+  // Theme settings state
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
+    return (localStorage.getItem('skiima_theme_mode') as ThemeMode) || 'system';
+  });
 
   // Profile and presence states
   const [profile, setProfile] = useState<{ peerId: string; peerName: string } | null>(null);
@@ -41,7 +47,23 @@ function App() {
   // Maintain a persistent P2PEngine singleton across views
   const engine = useMemo(() => new P2PEngine(), []);
 
-  // 1. Initialize Profile and Firestore Presence Heartbeat
+  // 1. Theme Mode Management Effect
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.remove('theme-light', 'theme-dark');
+    
+    localStorage.setItem('skiima_theme_mode', themeMode);
+    
+    if (themeMode === 'light') {
+      root.classList.add('theme-light');
+    } else if (themeMode === 'dark') {
+      root.classList.add('theme-dark');
+    } else {
+      // System mode: CSS @media query prefers-color-scheme handles it automatically
+    }
+  }, [themeMode]);
+
+  // 2. Initialize Profile and Firestore Presence Heartbeat
   useEffect(() => {
     const prof = presence.getOrInitializePeerProfile();
     setProfile(prof);
@@ -61,7 +83,7 @@ function App() {
     };
     window.addEventListener('beforeunload', handleUnload);
 
-    // 2. Listen to Inbound Direct Transfer Requests
+    // Listen to Inbound Direct Transfer Requests
     const unsubscribeRequests = presence.listenToInboundRequests(prof.peerId, (req) => {
       if (req && req.status === 'pending') {
         setInboundRequest(req);
@@ -70,11 +92,10 @@ function App() {
       }
     });
 
-    // 3. Connect P2P handshake events to populate contact registry
+    // Connect P2P handshake events to populate contact registry
     engine.onPeerHandshake = (peerId, peerName) => {
       console.log(`[P2P Handshake] Connected with peer ${peerName} (${peerId})`);
       historyDb.addContact(peerId, peerName);
-      // Refresh contacts list
       setContacts(historyDb.getContacts());
     };
 
@@ -122,7 +143,6 @@ function App() {
   }, [activeView]);
 
   const handleViewChange = (view: ViewType) => {
-    // If we change tabs while disconnected, cleanup any running peer instances
     if (connectionStatus === 'disconnected') {
       engine.cleanup();
     }
@@ -136,46 +156,35 @@ function App() {
       const updatedProfile = { ...profile, peerName: trimmed };
       setProfile(updatedProfile);
       setIsEditingName(false);
-      // Immediately publish presence under new name
       presence.publishPresence(profile.peerId, trimmed, 'online');
     }
   };
 
-  // Check if peer is online based on heartbeat updated in last 60 seconds
   const isPeerOnline = (peerId: string): boolean => {
     const data = activePresence[peerId];
     if (!data || data.status !== 'online') return false;
     
     try {
       const diff = Date.now() - new Date(data.lastSeen).getTime();
-      return diff < 60000; // Online if updated within last 60s
+      return diff < 60000;
     } catch {
       return false;
     }
   };
 
-  // Compile WhatsApp Beeper url
   const getWhatsAppBeepUrl = (peerName: string) => {
     const message = `Hey ${peerName}! I want to send you a file on Skiima Share. Open https://skiima.vercel.app/ so we can do a secure direct P2P transfer.`;
     return `https://api.whatsapp.com/send?text=${encodeURIComponent(message)}`;
   };
 
   // === HANDLE INBOUND TRANSFER REQUEST ===
-
   const handleAcceptInbound = async () => {
     if (!inboundRequest || !profile) return;
     const req = inboundRequest;
-    
-    // 1. Mark request as accepted in Firestore
     await presence.acceptRequest(profile.peerId);
-    
-    // 2. Register contact in local storage
     historyDb.addContact(req.senderId, req.senderName);
-    
-    // 3. Close the modal
     setInboundRequest(null);
 
-    // 4. Connect to Room instantly (skips code typing!)
     setActiveView('receive');
     setTimeout(() => {
       engine.connectToPeer(req.code);
@@ -189,26 +198,19 @@ function App() {
   };
 
   // === HANDLE OUTBOUND TRANSFER REQUEST ===
-
   const handleSelectFileForContact = async (targetPeerId: string, targetPeerName: string, file: File) => {
     if (!profile) return;
 
-    // 1. Clean up active engine connections
     engine.cleanup();
     setQuickSendFile(file);
 
-    // 2. Generate random 6-digit room code
     const code = Math.floor(100000 + Math.random() * 900000).toString();
-
-    // 3. Initialize engine in Sender mode
     engine.initialize(code);
 
-    // 4. Update UI states
     setOutboundStatus('pending');
     setOutboundTargetName(targetPeerName);
     setOutboundMetadata({ name: file.name, size: file.size });
 
-    // 5. Publish request in Firestore
     const cancelFn = await presence.createOutboundRequest(
       targetPeerId,
       profile.peerId,
@@ -218,8 +220,6 @@ function App() {
       (status) => {
         setOutboundStatus(status);
         if (status === 'accepted') {
-          // Receiver accepted! Engine will start streaming automatically
-          // Close the sender request overlay and navigate to Send panel
           setTimeout(() => {
             setOutboundStatus(null);
             setOutboundCancelFn(null);
@@ -273,7 +273,6 @@ function App() {
     }
   };
 
-  // Helper formatting values
   const formatBytes = (bytes: number, decimals = 1) => {
     if (bytes === 0) return '0 B';
     const k = 1024;
@@ -306,7 +305,6 @@ function App() {
     });
   };
 
-  // Calculate stats dynamically from history logs
   const statsCalculated = useMemo(() => {
     const history = historyDb.getShareHistory().filter(item => item.status === 'success');
     const sent = history.filter(item => item.peerRole === 'sender');
@@ -318,14 +316,13 @@ function App() {
     };
   }, [activeView]);
 
-  // Calculate weekday activity dynamically
   const weeklyActivityData = useMemo(() => {
     const history = historyDb.getShareHistory().filter(item => item.status === 'success');
-    const activity = [0, 0, 0, 0, 0, 0, 0]; // Sun-Sat
+    const activity = [0, 0, 0, 0, 0, 0, 0];
     history.forEach(item => {
       try {
         const date = new Date(item.transferDate);
-        const day = date.getDay(); // 0 (Sun) to 6 (Sat)
+        const day = date.getDay();
         activity[day]++;
       } catch (e) {
         console.error(e);
@@ -336,6 +333,35 @@ function App() {
 
   const maxWeeklyActivityValue = Math.max(...weeklyActivityData, 1);
   const daysOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+  // Global Theme Selector Component
+  const renderThemeSelector = () => {
+    return (
+      <div className="theme-selector">
+        <button
+          onClick={() => setThemeMode('light')}
+          className={`theme-selector-btn ${themeMode === 'light' ? 'active' : ''}`}
+          title="Light Appearance"
+        >
+          <Sun size={14} />
+        </button>
+        <button
+          onClick={() => setThemeMode('dark')}
+          className={`theme-selector-btn ${themeMode === 'dark' ? 'active' : ''}`}
+          title="Dark Appearance"
+        >
+          <Moon size={14} />
+        </button>
+        <button
+          onClick={() => setThemeMode('system')}
+          className={`theme-selector-btn ${themeMode === 'system' ? 'active' : ''}`}
+          title="System Sync"
+        >
+          <Monitor size={14} />
+        </button>
+      </div>
+    );
+  };
 
   return (
     <>
@@ -362,7 +388,7 @@ function App() {
         {activeView === 'dashboard' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
             
-            {/* Aesthetic Header */}
+            {/* Aesthetic Header with Logo and Name Wordmark */}
             <div style={{
               display: 'flex',
               justifyContent: 'space-between',
@@ -370,42 +396,49 @@ function App() {
               padding: '0.25rem 0.5rem',
               marginTop: '0.5rem'
             }}>
-              <div>
-                <h1 style={{ fontSize: '2rem', fontWeight: 700, margin: 0, letterSpacing: '-0.03em', color: 'var(--text-primary)' }}>
-                  Dashboard
-                </h1>
-                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontWeight: 500 }}>
-                  {getFormattedDate()}
-                </p>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                <img src="/favicon.svg" alt="Skiima Logo" style={{ width: '38px', height: '36px' }} />
+                <div>
+                  <h1 style={{ fontSize: '1.65rem', fontWeight: 700, margin: 0, letterSpacing: '-0.03em', color: 'var(--text-primary)', display: 'flex', alignItems: 'center' }}>
+                    Skiima<span style={{ color: 'var(--accent-cyan)', fontWeight: 600 }}>Share</span>
+                  </h1>
+                  <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 500 }}>
+                    {getFormattedDate()}
+                  </p>
+                </div>
               </div>
 
-              {/* Colored Initial Avatar */}
-              {profile && (
-                <button
-                  onClick={() => handleViewChange('profile')}
-                  style={{
-                    width: '44px',
-                    height: '44px',
-                    borderRadius: '50%',
-                    background: 'linear-gradient(135deg, #8176f2 0%, #5649e7 100%)',
-                    color: '#ffffff',
-                    border: '3px solid #ffffff',
-                    boxShadow: '0 8px 16px rgba(129, 118, 242, 0.25)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontWeight: 700,
-                    fontSize: '1.1rem',
-                    cursor: 'pointer',
-                    outline: 'none',
-                    transition: 'var(--transition-fast)'
-                  }}
-                  className="btn-icon-copy"
-                  title="View Profile Settings"
-                >
-                  {profile.peerName.charAt(0).toUpperCase()}
-                </button>
-              )}
+              {/* Theme toggler and Profile Avatar */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                {renderThemeSelector()}
+
+                {profile && (
+                  <button
+                    onClick={() => handleViewChange('profile')}
+                    style={{
+                      width: '40px',
+                      height: '40px',
+                      borderRadius: '50%',
+                      background: 'linear-gradient(135deg, #8176f2 0%, #5649e7 100%)',
+                      color: '#ffffff',
+                      border: '3px solid var(--bg-dark)',
+                      boxShadow: 'var(--shadow-tactile)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontWeight: 700,
+                      fontSize: '1rem',
+                      cursor: 'pointer',
+                      outline: 'none',
+                      transition: 'var(--transition-fast)'
+                    }}
+                    className="btn-icon-copy"
+                    title="View Profile Settings"
+                  >
+                    {profile.peerName.charAt(0).toUpperCase()}
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Quick Secure Badge */}
@@ -413,7 +446,7 @@ function App() {
               display: 'flex',
               alignItems: 'center',
               gap: '0.6rem',
-              background: '#ffffff',
+              background: 'var(--bg-glass)',
               border: '1px solid var(--border-muted)',
               padding: '0.65rem 1.25rem',
               borderRadius: '9999px',
@@ -538,13 +571,7 @@ function App() {
             </div>
 
             {/* Quick Send Scrollable Row */}
-            <div style={{
-              background: '#ffffff',
-              borderRadius: '24px',
-              padding: '1.25rem 1.5rem',
-              boxShadow: 'var(--shadow-premium)',
-              border: '1px solid var(--border-muted)'
-            }}>
+            <div className="glass-panel" style={{ padding: '1.25rem 1.5rem' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.85rem' }}>
                 <h3 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
                   Quick Send Contacts
@@ -596,8 +623,8 @@ function App() {
                             width: '52px',
                             height: '52px',
                             borderRadius: '50%',
-                            background: online ? 'rgba(129, 118, 242, 0.08)' : '#f8fafc',
-                            border: online ? '2px solid var(--accent-cyan)' : '2px solid #e2e8f0',
+                            background: online ? 'rgba(129, 118, 242, 0.08)' : 'var(--bg-input)',
+                            border: online ? '2px solid var(--accent-cyan)' : '2px solid var(--border-input)',
                             color: online ? 'var(--accent-cyan)' : 'var(--text-secondary)',
                             display: 'flex',
                             alignItems: 'center',
@@ -610,7 +637,6 @@ function App() {
                             {displayName.charAt(0).toUpperCase()}
                           </div>
                           
-                          {/* Pulser online tag */}
                           {online && (
                             <span style={{
                               position: 'absolute',
@@ -620,7 +646,7 @@ function App() {
                               height: '12px',
                               background: '#10b981',
                               borderRadius: '50%',
-                              border: '2px solid #ffffff',
+                              border: '2px solid var(--bg-dark)',
                               boxShadow: '0 0 6px #10b981',
                               animation: 'ringPulse 1.5s infinite'
                             }} />
@@ -646,12 +672,8 @@ function App() {
             </div>
 
             {/* Latest Activities Ledger (Recent Shares) */}
-            <div style={{
-              background: '#ffffff',
-              borderRadius: '24px',
+            <div className="glass-panel" style={{
               padding: '1.25rem 1.5rem',
-              boxShadow: 'var(--shadow-premium)',
-              border: '1px solid var(--border-muted)',
               display: 'flex',
               flexDirection: 'column',
               gap: '1rem'
@@ -699,8 +721,8 @@ function App() {
                           display: 'flex',
                           alignItems: 'center',
                           padding: '0.75rem 1rem',
-                          background: '#f8fafc',
-                          border: '1px solid #e2e8f0',
+                          background: 'var(--bg-input)',
+                          border: '1px solid var(--border-input)',
                           borderRadius: '16px',
                           gap: '0.85rem',
                           justifyContent: 'space-between',
@@ -890,8 +912,8 @@ function App() {
                         display: 'flex',
                         alignItems: 'center',
                         padding: '0.85rem 1rem',
-                        background: '#f8fafc',
-                        border: '1px solid #e2e8f0',
+                        background: 'var(--bg-input)',
+                        border: '1px solid var(--border-input)',
                         borderRadius: '16px',
                         gap: '0.85rem',
                         justifyContent: 'space-between',
@@ -992,8 +1014,8 @@ function App() {
                 flexDirection: 'column',
                 alignItems: 'center',
                 gap: '1rem',
-                background: '#f8fafc',
-                border: '1px solid #e2e8f0',
+                background: 'var(--bg-input)',
+                border: '1px solid var(--border-input)',
                 padding: '1.5rem',
                 borderRadius: '24px',
                 boxShadow: 'var(--shadow-tactile)'
@@ -1032,7 +1054,7 @@ function App() {
                       <button onClick={handleSaveName} style={{ background: 'var(--accent-cyan)', border: 'none', color: '#fff', padding: '0.45rem', borderRadius: '8px', cursor: 'pointer', display: 'flex' }}>
                         <Check size={16} />
                       </button>
-                      <button onClick={() => { setIsEditingName(false); setNewName(profile.peerName); }} style={{ background: '#ffffff', border: '1px solid #cbd5e1', color: 'var(--text-secondary)', padding: '0.45rem', borderRadius: '8px', cursor: 'pointer', display: 'flex' }}>
+                      <button onClick={() => { setIsEditingName(false); setNewName(profile.peerName); }} style={{ background: 'var(--bg-dark)', border: '1px solid var(--border-input)', color: 'var(--text-secondary)', padding: '0.45rem', borderRadius: '8px', cursor: 'pointer', display: 'flex' }}>
                         <X size={16} />
                       </button>
                     </div>
@@ -1053,6 +1075,28 @@ function App() {
               </div>
             )}
 
+            {/* Appearance settings card */}
+            <div>
+              <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '0.65rem' }}>
+                App Appearance
+              </h3>
+              <div style={{
+                background: 'var(--bg-input)',
+                border: '1px solid var(--border-input)',
+                padding: '0.85rem 1.25rem',
+                borderRadius: '20px',
+                boxShadow: 'var(--shadow-tactile)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between'
+              }}>
+                <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                  Theme Mode
+                </span>
+                {renderThemeSelector()}
+              </div>
+            </div>
+
             {/* Real-time Stats Grid */}
             <div>
               <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '0.65rem' }}>
@@ -1063,15 +1107,15 @@ function App() {
                 gridTemplateColumns: 'repeat(3, 1fr)',
                 gap: '0.75rem'
               }}>
-                <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', padding: '0.85rem 0.5rem', borderRadius: '16px', textAlign: 'center', boxShadow: 'var(--shadow-tactile)' }}>
+                <div style={{ background: 'var(--bg-input)', border: '1px solid var(--border-input)', padding: '0.85rem 0.5rem', borderRadius: '16px', textAlign: 'center', boxShadow: 'var(--shadow-tactile)' }}>
                   <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em', marginBottom: '0.25rem' }}>Shares</div>
                   <div style={{ fontSize: '1.25rem', fontWeight: 700, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{statsCalculated.total}</div>
                 </div>
-                <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', padding: '0.85rem 0.5rem', borderRadius: '16px', textAlign: 'center', boxShadow: 'var(--shadow-tactile)' }}>
+                <div style={{ background: 'var(--bg-input)', border: '1px solid var(--border-input)', padding: '0.85rem 0.5rem', borderRadius: '16px', textAlign: 'center', boxShadow: 'var(--shadow-tactile)' }}>
                   <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em', marginBottom: '0.25rem' }}>Sent</div>
                   <div style={{ fontSize: '1.25rem', fontWeight: 700, color: '#ff5b7f', fontFamily: 'var(--font-mono)' }}>{statsCalculated.sent}</div>
                 </div>
-                <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', padding: '0.85rem 0.5rem', borderRadius: '16px', textAlign: 'center', boxShadow: 'var(--shadow-tactile)' }}>
+                <div style={{ background: 'var(--bg-input)', border: '1px solid var(--border-input)', padding: '0.85rem 0.5rem', borderRadius: '16px', textAlign: 'center', boxShadow: 'var(--shadow-tactile)' }}>
                   <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em', marginBottom: '0.25rem' }}>Received</div>
                   <div style={{ fontSize: '1.25rem', fontWeight: 700, color: '#8176f2', fontFamily: 'var(--font-mono)' }}>{statsCalculated.received}</div>
                 </div>
@@ -1089,9 +1133,9 @@ function App() {
                 alignItems: 'flex-end',
                 height: '135px',
                 padding: '1.15rem 0.75rem 0.75rem',
-                background: '#f8fafc',
+                background: 'var(--bg-input)',
                 borderRadius: '20px',
-                border: '1px solid #e2e8f0',
+                border: '1px solid var(--border-input)',
                 boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.01)'
               }}>
                 {weeklyActivityData.map((val, idx) => {
@@ -1117,7 +1161,7 @@ function App() {
                       <div style={{
                         width: '12px',
                         height: '64px',
-                        background: '#e2e8f0',
+                        background: 'var(--bg-grid-block)',
                         borderRadius: '9999px',
                         position: 'relative',
                         overflow: 'hidden'
@@ -1128,7 +1172,7 @@ function App() {
                           left: 0,
                           right: 0,
                           height: `${heightPct}%`,
-                          background: val > 0 ? 'linear-gradient(180deg, var(--accent-cyan) 0%, #5649e7 100%)' : '#cbd5e1',
+                          background: val > 0 ? 'linear-gradient(180deg, var(--accent-cyan) 0%, #5649e7 100%)' : 'var(--bg-grid-block)',
                           borderRadius: '9999px',
                           transition: 'height 0.4s ease-out'
                         }} />
@@ -1159,7 +1203,7 @@ function App() {
               </div>
 
               {contacts.length === 0 ? (
-                <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', padding: '1.25rem', borderRadius: '16px', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+                <div style={{ background: 'var(--bg-input)', border: '1px solid var(--border-input)', padding: '1.25rem', borderRadius: '16px', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
                   No saved contacts yet. Direct P2P transfers save linked contacts automatically.
                 </div>
               ) : (
@@ -1175,8 +1219,8 @@ function App() {
                           display: 'flex',
                           alignItems: 'center',
                           padding: '0.65rem 0.85rem',
-                          background: '#f8fafc',
-                          border: '1px solid #e2e8f0',
+                          background: 'var(--bg-input)',
+                          border: '1px solid var(--border-input)',
                           borderRadius: '14px',
                           gap: '0.75rem',
                           justifyContent: 'space-between'
@@ -1187,7 +1231,7 @@ function App() {
                             width: '32px',
                             height: '32px',
                             borderRadius: '50%',
-                            background: online ? 'rgba(129, 118, 242, 0.08)' : '#e2e8f0',
+                            background: online ? 'rgba(129, 118, 242, 0.08)' : 'var(--bg-grid-block)',
                             color: online ? 'var(--accent-cyan)' : 'var(--text-secondary)',
                             display: 'flex',
                             alignItems: 'center',
@@ -1215,8 +1259,8 @@ function App() {
                             target="_blank"
                             rel="noreferrer"
                             style={{
-                              background: '#ffffff',
-                              border: '1px solid #cbd5e1',
+                              background: 'var(--bg-dark)',
+                              border: '1px solid var(--border-input)',
                               color: '#25D366',
                               padding: '0.3rem 0.6rem',
                               fontSize: '0.7rem',
@@ -1246,9 +1290,9 @@ function App() {
       {/* Footer */}
       <footer style={{
         marginTop: 'auto',
-        padding: '2rem 1.5rem',
+        padding: '2.5rem 1.5rem',
         textAlign: 'center',
-        background: '#ffffff',
+        background: 'var(--bg-dark)',
         borderTop: '1px solid var(--border-muted)',
         width: '100%'
       }}>
@@ -1308,8 +1352,8 @@ function App() {
             </div>
 
             {/* File details card */}
-            <div className="file-card" style={{ background: '#f8fafc', borderColor: '#e2e8f0', padding: '0.75rem 0.85rem', marginBottom: 0 }}>
-              <div className="file-card-icon" style={{ background: 'rgba(13, 20, 43, 0.04)', color: 'var(--text-secondary)', padding: '0.65rem' }}>
+            <div className="file-card" style={{ background: 'var(--bg-input)', borderColor: 'var(--border-input)', padding: '0.75rem 0.85rem', marginBottom: 0 }}>
+              <div className="file-card-icon" style={{ background: 'var(--bg-grid-container)', color: 'var(--text-secondary)', padding: '0.65rem' }}>
                 <File size={18} />
               </div>
               <div className="file-info" style={{ textAlign: 'left' }}>
@@ -1438,8 +1482,8 @@ function App() {
             )}
 
             {/* File info card */}
-            <div className="file-card" style={{ background: '#f8fafc', borderColor: '#e2e8f0', padding: '0.75rem 0.85rem', marginBottom: 0 }}>
-              <div className="file-card-icon" style={{ background: 'rgba(13, 20, 43, 0.04)', color: 'var(--text-secondary)', padding: '0.65rem' }}>
+            <div className="file-card" style={{ background: 'var(--bg-input)', borderColor: 'var(--border-input)', padding: '0.75rem 0.85rem', marginBottom: 0 }}>
+              <div className="file-card-icon" style={{ background: 'var(--bg-grid-container)', color: 'var(--text-secondary)', padding: '0.65rem' }}>
                 <File size={18} />
               </div>
               <div className="file-info" style={{ textAlign: 'left' }}>
@@ -1472,7 +1516,7 @@ function App() {
                 <button
                   onClick={handleCancelOutbound}
                   className="btn-primary"
-                  style={{ width: '100%', border: '1px solid #cbd5e1', background: '#ffffff', color: 'var(--text-primary)', boxShadow: 'none', padding: '0.65rem' }}
+                  style={{ width: '100%', border: '1px solid var(--border-input)', background: 'var(--bg-dark)', color: 'var(--text-primary)', boxShadow: 'none', padding: '0.65rem' }}
                 >
                   Close
                 </button>
