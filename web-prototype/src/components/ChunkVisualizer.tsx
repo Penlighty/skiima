@@ -12,7 +12,7 @@ export const ChunkVisualizer: React.FC<ChunkVisualizerProps> = ({ progress, isTr
 
   return (
     <div style={{
-      background: 'rgba(255, 255, 255, 0.01)',
+      background: '#f8fafc',
       border: '1px solid var(--border-muted)',
       borderRadius: '16px',
       padding: '1.25rem',
@@ -20,7 +20,8 @@ export const ChunkVisualizer: React.FC<ChunkVisualizerProps> = ({ progress, isTr
       display: 'flex',
       flexDirection: 'column',
       alignItems: 'center',
-      gap: '0.85rem'
+      gap: '0.85rem',
+      width: '100%'
     }}>
       <div style={{
         display: 'flex',
@@ -28,7 +29,7 @@ export const ChunkVisualizer: React.FC<ChunkVisualizerProps> = ({ progress, isTr
         width: '100%',
         fontSize: '0.8rem',
         color: 'var(--text-secondary)',
-        fontWeight: 500,
+        fontWeight: 600,
         textTransform: 'uppercase',
         letterSpacing: '0.05em'
       }}>
@@ -44,29 +45,27 @@ export const ChunkVisualizer: React.FC<ChunkVisualizerProps> = ({ progress, isTr
         width: '100%',
         maxWidth: '220px',
         margin: '0 auto',
-        padding: '0.5rem',
-        background: 'rgba(0, 0, 0, 0.2)',
+        padding: '0.6rem',
+        background: 'rgba(13, 20, 43, 0.03)',
         borderRadius: '12px',
-        border: '1px solid rgba(255, 255, 255, 0.03)'
+        border: '1px solid rgba(0, 0, 0, 0.02)'
       }}>
         {Array.from({ length: totalBlocks }).map((_, idx) => {
           const isFilled = idx < filledBlocks;
           const isCurrent = idx === currentBlockIndex;
 
-          let bg = 'rgba(255, 255, 255, 0.05)';
-          let border = '1px solid rgba(255, 255, 255, 0.02)';
+          let bg = '#e2e8f0';
+          let border = 'none';
           let shadow = 'none';
           let scale = '1';
 
           if (isFilled) {
             bg = 'linear-gradient(135deg, var(--accent-cyan), var(--accent-purple))';
-            border = 'none';
-            shadow = '0 0 6px rgba(6, 182, 212, 0.6)';
+            shadow = '0 2px 4px rgba(129, 118, 242, 0.3)';
           } else if (isCurrent) {
             bg = '#ffffff';
-            border = 'none';
-            shadow = '0 0 10px #ffffff, 0 0 20px var(--accent-cyan)';
-            scale = '1.15';
+            shadow = '0 0 8px rgba(129, 118, 242, 0.8), 0 0 15px var(--accent-cyan)';
+            scale = '1.25';
           }
 
           return (
@@ -87,14 +86,14 @@ export const ChunkVisualizer: React.FC<ChunkVisualizerProps> = ({ progress, isTr
         })}
       </div>
 
-      <div style={{ display: 'flex', gap: '1rem', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+      <div style={{ display: 'flex', gap: '1rem', fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 500 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
           <div style={{ width: '8px', height: '8px', background: 'linear-gradient(135deg, var(--accent-cyan), var(--accent-purple))', borderRadius: '2px' }} />
-          <span>Processed ({filledBlocks} chunks)</span>
+          <span>Processed ({filledBlocks})</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-          <div style={{ width: '8px', height: '8px', background: 'rgba(255, 255, 255, 0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '2px' }} />
-          <span>Pending ({totalBlocks - filledBlocks} chunks)</span>
+          <div style={{ width: '8px', height: '8px', background: '#e2e8f0', borderRadius: '2px' }} />
+          <span>Pending ({totalBlocks - filledBlocks})</span>
         </div>
       </div>
 
@@ -105,9 +104,9 @@ export const ChunkVisualizer: React.FC<ChunkVisualizerProps> = ({ progress, isTr
             filter: brightness(1);
           }
           100% {
-            transform: scale(1.2);
-            filter: brightness(1.3);
-            box-shadow: 0 0 14px #ffffff, 0 0 24px var(--accent-cyan);
+            transform: scale(1.25);
+            filter: brightness(1.2);
+            box-shadow: 0 0 12px rgba(129, 118, 242, 0.9), 0 0 20px var(--accent-cyan);
           }
         }
       `}</style>

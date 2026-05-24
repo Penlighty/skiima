@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { UploadCloud, File, Copy, Check, Zap, RotateCcw, AlertTriangle, Radio } from 'lucide-react';
+import { UploadCloud, File, Copy, Check, Zap, RotateCcw, AlertTriangle, Radio, X } from 'lucide-react';
 import { P2PEngine } from '../lib/P2PEngine';
 import type { TransferStats, ConnectionStatus } from '../lib/P2PEngine';
 import { historyDb } from '../lib/historyDb';
@@ -11,6 +11,7 @@ interface SenderCardProps {
   setConnectionStatus: (status: ConnectionStatus) => void;
   initialFile?: File | null;
   onClearInitialFile?: () => void;
+  onBack?: () => void;
 }
 
 export const SenderCard: React.FC<SenderCardProps> = ({
@@ -19,6 +20,7 @@ export const SenderCard: React.FC<SenderCardProps> = ({
   setConnectionStatus,
   initialFile,
   onClearInitialFile,
+  onBack
 }) => {
   const [file, setFile] = useState<File | null>(null);
   const [roomCode, setRoomCode] = useState<string>('');
@@ -28,6 +30,9 @@ export const SenderCard: React.FC<SenderCardProps> = ({
   const [transferDone, setTransferDone] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [showChunks, setShowChunks] = useState<boolean>(false);
+  const [isDragActive, setIsDragActive] = useState<boolean>(false);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleConnectFirst = () => {
     setErrorMsg('');
@@ -36,9 +41,6 @@ export const SenderCard: React.FC<SenderCardProps> = ({
     const generatedCode = Math.floor(100000 + Math.random() * 900000).toString();
     engine.initialize(generatedCode);
   };
-  const [isDragActive, setIsDragActive] = useState<boolean>(false);
-
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Hook up engine events
   useEffect(() => {
@@ -84,8 +86,7 @@ export const SenderCard: React.FC<SenderCardProps> = ({
 
     engine.onStatusChange = (status) => {
       setConnectionStatus(status);
-      if (status === 'connected-p2p') { // Strictly only allow direct P2P!
-        // Automatically start file streaming once receiver connects
+      if (status === 'connected-p2p') {
         if (file && !isTransferring && !transferDone) {
           setIsTransferring(true);
           engine.sendFile(file).catch((e) => {
@@ -96,9 +97,7 @@ export const SenderCard: React.FC<SenderCardProps> = ({
       }
     };
 
-    return () => {
-      // Don't fully cleanup engine on card change to allow keep-alive
-    };
+    return () => {};
   }, [engine, file, isTransferring, transferDone]);
 
   // Load existing room code if the P2PEngine is already pre-initialized
@@ -125,7 +124,7 @@ export const SenderCard: React.FC<SenderCardProps> = ({
   // AND WebRTC connection becomes fully connected.
   useEffect(() => {
     if (
-      (connectionStatus === 'connected-p2p') && // Strictly require direct P2P!
+      (connectionStatus === 'connected-p2p') &&
       file &&
       !isTransferring &&
       !transferDone
@@ -170,7 +169,6 @@ export const SenderCard: React.FC<SenderCardProps> = ({
     setTransferDone(false);
     setStats(null);
 
-    // Generate a simple, easily shareable 6-digit code
     const generatedCode = Math.floor(100000 + Math.random() * 900000).toString();
     engine.initialize(generatedCode);
   };
@@ -197,7 +195,6 @@ export const SenderCard: React.FC<SenderCardProps> = ({
     setConnectionStatus('disconnected');
   };
 
-  // Human-readable formatting helper
   const formatBytes = (bytes: number, decimals = 2) => {
     if (bytes === 0) return '0 Bytes';
     const k = 1024;
@@ -213,15 +210,66 @@ export const SenderCard: React.FC<SenderCardProps> = ({
 
   return (
     <div className="glass-panel" style={{ padding: '2rem', minHeight: '400px', display: 'flex', flexDirection: 'column' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
-        <h2 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <Zap size={24} style={{ color: 'var(--accent-purple)' }} /> Send File
-        </h2>
-        {connectionStatus !== 'disconnected' && (
-          <span className={`status-badge ${connectionStatus}`}>
-            <Radio size={14} /> {connectionStatus.replace('-', ' ').toUpperCase()}
-          </span>
-        )}
+      {/* Dynamic Slate Header with Back Button */}
+      <div style={{ 
+        display: 'flex', 
+        alignItems: 'center', 
+        justifyContent: 'space-between', 
+        marginBottom: '1.5rem', 
+        borderBottom: '1px solid var(--border-muted)', 
+        paddingBottom: '1rem' 
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          {onBack && (
+            <button 
+              onClick={onBack} 
+              style={{ 
+                background: 'none', 
+                border: 'none', 
+                color: 'var(--text-secondary)', 
+                cursor: 'pointer', 
+                display: 'flex', 
+                alignItems: 'center', 
+                justifyContent: 'center',
+                padding: '0.4rem',
+                borderRadius: '50%',
+                transition: 'var(--transition-fast)'
+              }}
+              className="btn-icon-copy"
+            >
+              <X size={18} />
+            </button>
+          )}
+          <h2 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0, fontSize: '1.25rem' }}>
+            <Zap size={20} style={{ color: 'var(--accent-purple)' }} /> Send File
+          </h2>
+        </div>
+        
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          {connectionStatus !== 'disconnected' && (
+            <span className={`status-badge ${connectionStatus}`}>
+              <Radio size={12} /> {connectionStatus.replace('-', ' ').toUpperCase()}
+            </span>
+          )}
+          {file && (
+            <button 
+              onClick={handleReset} 
+              style={{ 
+                background: 'none', 
+                border: 'none', 
+                color: 'var(--text-muted)', 
+                cursor: 'pointer', 
+                display: 'flex',
+                padding: '0.4rem',
+                borderRadius: '50%'
+              }}
+              className="btn-icon-copy"
+              title="Reset Connection"
+            >
+              <RotateCcw size={14} />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* 1. Initial State (No file, No room code) */}
@@ -257,8 +305,9 @@ export const SenderCard: React.FC<SenderCardProps> = ({
             onClick={handleConnectFirst}
             className="btn-primary"
             style={{
-              background: 'rgba(255, 255, 255, 0.02)',
-              border: '1px solid var(--border-muted)',
+              background: '#f8fafc',
+              border: '1px solid #cbd5e1',
+              color: 'var(--text-primary)',
               fontSize: '0.9rem',
               padding: '0.75rem',
               width: '100%',
@@ -275,7 +324,6 @@ export const SenderCard: React.FC<SenderCardProps> = ({
       {!file && roomCode && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', flexGrow: 1, justifyContent: 'center' }}>
           {(connectionStatus === 'disconnected' || connectionStatus === 'connecting') ? (
-            // Waiting for recipient
             <div style={{ textAlign: 'center', margin: '1rem 0' }}>
               <p style={{ marginBottom: '0.5rem', fontSize: '0.95rem' }}>
                 Waiting for recipient to connect. Share this key:
@@ -291,8 +339,8 @@ export const SenderCard: React.FC<SenderCardProps> = ({
               </p>
               <button
                 onClick={() => fileInputRef.current?.click()}
-                className="btn-primary"
-                style={{ border: '1px solid var(--border-muted)', marginTop: '0.5rem', padding: '0.5rem 1.5rem', borderRadius: '12px' }}
+                className="btn-cyan"
+                style={{ marginTop: '0.5rem', padding: '0.55rem 1.5rem', borderRadius: '12px', width: 'auto', display: 'inline-flex', alignSelf: 'center' }}
               >
                 Choose File
               </button>
@@ -304,7 +352,6 @@ export const SenderCard: React.FC<SenderCardProps> = ({
               />
             </div>
           ) : (
-            // Connected but no file loaded yet
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               <div
                 className={`dropzone ${isDragActive ? 'active' : ''}`}
@@ -313,7 +360,7 @@ export const SenderCard: React.FC<SenderCardProps> = ({
                 onDragLeave={handleDrag}
                 onDrop={handleDrop}
                 onClick={() => fileInputRef.current?.click()}
-                style={{ borderColor: 'var(--accent-green)', background: 'rgba(16, 185, 129, 0.02)' }}
+                style={{ borderColor: 'var(--accent-green)', background: 'rgba(16, 185, 129, 0.01)' }}
               >
                 <input
                   type="file"
@@ -321,7 +368,7 @@ export const SenderCard: React.FC<SenderCardProps> = ({
                   onChange={handleFileSelect}
                   style={{ display: 'none' }}
                 />
-                <div className="dropzone-icon" style={{ color: 'var(--accent-green)' }}>
+                <div className="dropzone-icon" style={{ color: 'var(--accent-green)', background: 'rgba(16, 185, 129, 0.08)' }}>
                   <UploadCloud size={40} />
                 </div>
                 <div>
@@ -339,7 +386,6 @@ export const SenderCard: React.FC<SenderCardProps> = ({
       {/* 3. Active Transfer or Complete state (File loaded) */}
       {file && (
         <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1 }}>
-          {/* File Card Info */}
           <div className="file-card">
             <div className="file-card-icon">
               <File size={24} />
@@ -355,7 +401,6 @@ export const SenderCard: React.FC<SenderCardProps> = ({
             )}
           </div>
 
-          {/* Code Sharing Area (Standard loop) */}
           {!isTransferring && !transferDone && !errorMsg && (
             <div style={{ textAlign: 'center', margin: '1rem 0' }}>
               <p style={{ marginBottom: '0.5rem', fontSize: '0.9rem' }}>
@@ -376,10 +421,9 @@ export const SenderCard: React.FC<SenderCardProps> = ({
             </div>
           )}
 
-          {/* Error Message */}
           {errorMsg && (
             <div style={{
-              background: 'rgba(239, 68, 68, 0.1)',
+              background: '#fef2f2',
               border: '1px solid rgba(239, 68, 68, 0.2)',
               borderRadius: '12px',
               padding: '1rem',
@@ -390,15 +434,15 @@ export const SenderCard: React.FC<SenderCardProps> = ({
               margin: '1rem 0'
             }}>
               <AlertTriangle size={20} />
-              <p style={{ color: '#fca5a5', fontSize: '0.85rem' }}>{errorMsg}</p>
+              <p style={{ color: '#991b1b', fontSize: '0.85rem', fontWeight: 500 }}>{errorMsg}</p>
             </div>
           )}
 
-          {/* TURN Connection advisory warning (Blocker) */}
+          {/* TURN Connection blocker */}
           {connectionStatus === 'connected-turn' && !transferDone && (
             <div style={{
-              background: 'rgba(239, 68, 68, 0.05)',
-              border: '1px solid rgba(239, 68, 68, 0.2)',
+              background: '#fef2f2',
+              border: '1px solid rgba(239, 68, 68, 0.25)',
               borderRadius: '16px',
               padding: '1.25rem',
               marginBottom: '1rem',
@@ -408,24 +452,23 @@ export const SenderCard: React.FC<SenderCardProps> = ({
               gap: '0.75rem',
               textAlign: 'left'
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 600 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 700 }}>
                 <AlertTriangle size={18} /> File Sharing Blocked: Non-P2P Connection
               </div>
-              <p style={{ color: '#fca5a5', margin: 0, fontSize: '0.82rem', lineHeight: '1.5' }}>
-                Skiima detected that your connection is going through a global relay server (TURN) because direct P2P is blocked by carrier CGNAT firewalls or a commercial VPN. **File sharing is blocked over relayed connections to prevent quota overages.**
+              <p style={{ color: '#991b1b', margin: 0, fontSize: '0.85rem', lineHeight: '1.5' }}>
+                Skiima detected that your connection is going through a global relay server (TURN) because direct P2P is blocked by carrier firewalls (CGNAT) or a VPN. **File sharing is blocked over relayed connections to prevent quota overages.**
               </p>
-              <div style={{ background: 'rgba(0,0,0,0.2)', padding: '0.75rem', borderRadius: '10px', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                <strong style={{ color: 'var(--text-primary)' }}>How to enable transfer:</strong>
-                <ul style={{ margin: '0.35rem 0 0 1rem', padding: 0, display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+              <div style={{ background: '#ffffff', border: '1px solid #fee2e2', padding: '0.75rem', borderRadius: '10px', fontSize: '0.8rem', color: '#4a5568' }}>
+                <strong style={{ color: '#1a202c' }}>How to enable P2P transfer:</strong>
+                <ul style={{ margin: '0.35rem 0 0 1.25rem', padding: 0, display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
                   <li>Connect both devices to the <strong>same local Wi-Fi network</strong>.</li>
-                  <li>Turn off mobile cellular data (LTE/5G) hotspots.</li>
+                  <li>Turn off cellular data hotspots.</li>
                   <li>Disable commercial/corporate VPNs on both ends.</li>
                 </ul>
               </div>
             </div>
           )}
 
-          {/* Transfer stats & progress */}
           {(isTransferring || stats) && !transferDone && (
             <div className="progress-container">
               <div className="progress-header">
@@ -452,15 +495,15 @@ export const SenderCard: React.FC<SenderCardProps> = ({
                 </div>
               )}
 
-              {/* Show Stream Chunks Toggle Button */}
               <button
                 type="button"
                 onClick={() => setShowChunks(!showChunks)}
                 className="btn-primary"
                 style={{
                   marginTop: '1rem',
-                  background: 'rgba(255, 255, 255, 0.02)',
-                  border: '1px solid var(--border-muted)',
+                  background: '#f8fafc',
+                  border: '1px solid #cbd5e1',
+                  color: 'var(--text-secondary)',
                   fontSize: '0.8rem',
                   padding: '0.45rem 1rem',
                   width: '100%',
@@ -477,7 +520,6 @@ export const SenderCard: React.FC<SenderCardProps> = ({
             </div>
           )}
 
-          {/* Done State */}
           {transferDone && (
             <div style={{ textAlign: 'center', margin: '2rem 0 1rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem' }}>
               <div style={{
@@ -486,7 +528,7 @@ export const SenderCard: React.FC<SenderCardProps> = ({
                 padding: '1rem',
                 borderRadius: '50%',
                 display: 'inline-flex',
-                boxShadow: '0 0 20px rgba(16, 185, 129, 0.2)'
+                boxShadow: '0 4px 12px rgba(16, 185, 129, 0.15)'
               }}>
                 <Check size={36} />
               </div>

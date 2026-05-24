@@ -1,19 +1,18 @@
-import { useState, useMemo, useEffect } from 'react';
-import { Send, Download, Zap, Info, Shield, Globe, Users, History, User, Edit2, Check, X, Radio, File, AlertTriangle } from 'lucide-react';
+import { useState, useMemo, useEffect, useRef } from 'react';
+import { Download, Zap, Info, Shield, Globe, History, User, Edit2, Check, X, Radio, File, AlertTriangle, ArrowUpRight, ArrowDownLeft, UploadCloud, DownloadCloud, ChevronRight, MessageCircle } from 'lucide-react';
 import { P2PEngine } from './lib/P2PEngine';
 import type { ConnectionStatus } from './lib/P2PEngine';
 import { SenderCard } from './components/SenderCard';
 import { ReceiverCard } from './components/ReceiverCard';
-import { ContactsTab } from './components/ContactsTab';
-import { HistoryTab } from './components/HistoryTab';
 import { presence } from './lib/presence';
 import type { TransferRequest } from './lib/presence';
 import { historyDb } from './lib/historyDb';
+import type { ContactItem, HistoryItem } from './lib/historyDb';
 
-type TabType = 'send' | 'receive' | 'contacts' | 'history';
+type ViewType = 'dashboard' | 'send' | 'receive' | 'profile' | 'history_full';
 
 function App() {
-  const [activeTab, setActiveTab] = useState<TabType>('send');
+  const [activeView, setActiveView] = useState<ViewType>('dashboard');
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
 
   // Profile and presence states
@@ -29,7 +28,17 @@ function App() {
   const [outboundCancelFn, setOutboundCancelFn] = useState<(() => void) | null>(null);
   const [quickSendFile, setQuickSendFile] = useState<File | null>(null);
 
-  // Maintain a persistent P2PEngine singleton across tab views
+  // Contacts and recent history states
+  const [contacts, setContacts] = useState<ContactItem[]>([]);
+  const [recentHistory, setRecentHistory] = useState<HistoryItem[]>([]);
+  const [fullHistory, setFullHistory] = useState<HistoryItem[]>([]);
+  const [activePresence, setActivePresence] = useState<Record<string, { status: 'online' | 'offline'; lastSeen: string; peerName: string }>>({});
+
+  // Quick Send file chooser trigger state
+  const quickSendFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [selectedQuickSendContact, setSelectedQuickSendContact] = useState<{ id: string; name: string } | null>(null);
+
+  // Maintain a persistent P2PEngine singleton across views
   const engine = useMemo(() => new P2PEngine(), []);
 
   // 1. Initialize Profile and Firestore Presence Heartbeat
@@ -65,6 +74,8 @@ function App() {
     engine.onPeerHandshake = (peerId, peerName) => {
       console.log(`[P2P Handshake] Connected with peer ${peerName} (${peerId})`);
       historyDb.addContact(peerId, peerName);
+      // Refresh contacts list
+      setContacts(historyDb.getContacts());
     };
 
     return () => {
@@ -76,12 +87,46 @@ function App() {
     };
   }, [engine]);
 
-  const handleTabChange = (tab: TabType) => {
+  // Load database lists on view change
+  useEffect(() => {
+    const list = historyDb.getContacts();
+    setContacts(list);
+    setRecentHistory(historyDb.getShareHistory().slice(0, 3));
+    setFullHistory(historyDb.getShareHistory());
+
+    // Subscribe to each contact's presence in Firestore
+    const unsubscribers = list.map((contact) => {
+      return presence.subscribeToPeerPresence(contact.peerId, (data) => {
+        if (data) {
+          setActivePresence((prev) => ({
+            ...prev,
+            [contact.peerId]: {
+              status: data.status,
+              lastSeen: data.lastSeen,
+              peerName: data.peerName
+            }
+          }));
+        } else {
+          setActivePresence((prev) => {
+            const copy = { ...prev };
+            delete copy[contact.peerId];
+            return copy;
+          });
+        }
+      });
+    });
+
+    return () => {
+      unsubscribers.forEach((unsub) => unsub());
+    };
+  }, [activeView]);
+
+  const handleViewChange = (view: ViewType) => {
     // If we change tabs while disconnected, cleanup any running peer instances
     if (connectionStatus === 'disconnected') {
       engine.cleanup();
     }
-    setActiveTab(tab);
+    setActiveView(view);
   };
 
   const handleSaveName = () => {
@@ -94,6 +139,25 @@ function App() {
       // Immediately publish presence under new name
       presence.publishPresence(profile.peerId, trimmed, 'online');
     }
+  };
+
+  // Check if peer is online based on heartbeat updated in last 60 seconds
+  const isPeerOnline = (peerId: string): boolean => {
+    const data = activePresence[peerId];
+    if (!data || data.status !== 'online') return false;
+    
+    try {
+      const diff = Date.now() - new Date(data.lastSeen).getTime();
+      return diff < 60000; // Online if updated within last 60s
+    } catch {
+      return false;
+    }
+  };
+
+  // Compile WhatsApp Beeper url
+  const getWhatsAppBeepUrl = (peerName: string) => {
+    const message = `Hey ${peerName}! I want to send you a file on Skiima Share. Open https://skiima.vercel.app/ so we can do a secure direct P2P transfer.`;
+    return `https://api.whatsapp.com/send?text=${encodeURIComponent(message)}`;
   };
 
   // === HANDLE INBOUND TRANSFER REQUEST ===
@@ -112,7 +176,7 @@ function App() {
     setInboundRequest(null);
 
     // 4. Connect to Room instantly (skips code typing!)
-    setActiveTab('receive');
+    setActiveView('receive');
     setTimeout(() => {
       engine.connectToPeer(req.code);
     }, 100);
@@ -159,7 +223,7 @@ function App() {
           setTimeout(() => {
             setOutboundStatus(null);
             setOutboundCancelFn(null);
-            setActiveTab('send');
+            setActiveView('send');
           }, 800);
         }
       }
@@ -178,6 +242,38 @@ function App() {
     engine.cleanup();
   };
 
+  const handleQuickSendAvatarClick = (peerId: string, peerName: string) => {
+    setSelectedQuickSendContact({ id: peerId, name: peerName });
+    if (quickSendFileInputRef.current) {
+      quickSendFileInputRef.current.click();
+    }
+  };
+
+  const handleQuickSendFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0 && selectedQuickSendContact) {
+      const file = e.target.files[0];
+      handleSelectFileForContact(selectedQuickSendContact.id, selectedQuickSendContact.name, file);
+      setSelectedQuickSendContact(null);
+      e.target.value = '';
+    }
+  };
+
+  const handleClearHistory = () => {
+    if (window.confirm('Are you sure you want to clear your file sharing history?')) {
+      historyDb.clearShareHistory();
+      setFullHistory([]);
+      setRecentHistory([]);
+    }
+  };
+
+  const handleClearContacts = () => {
+    if (window.confirm('Are you sure you want to clear your saved contacts list?')) {
+      historyDb.clearContacts();
+      setContacts([]);
+    }
+  };
+
+  // Helper formatting values
   const formatBytes = (bytes: number, decimals = 1) => {
     if (bytes === 0) return '0 B';
     const k = 1024;
@@ -187,232 +283,986 @@ function App() {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
   };
 
+  const formatDate = (isoString: string) => {
+    try {
+      const date = new Date(isoString);
+      return date.toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch {
+      return 'Unknown';
+    }
+  };
+
+  const getFormattedDate = () => {
+    const d = new Date();
+    return d.toLocaleDateString('en-US', {
+      weekday: 'long',
+      day: 'numeric',
+      month: 'short'
+    });
+  };
+
+  // Calculate stats dynamically from history logs
+  const statsCalculated = useMemo(() => {
+    const history = historyDb.getShareHistory().filter(item => item.status === 'success');
+    const sent = history.filter(item => item.peerRole === 'sender');
+    const received = history.filter(item => item.peerRole === 'receiver');
+    return {
+      total: history.length,
+      sent: sent.length,
+      received: received.length
+    };
+  }, [activeView]);
+
+  // Calculate weekday activity dynamically
+  const weeklyActivityData = useMemo(() => {
+    const history = historyDb.getShareHistory().filter(item => item.status === 'success');
+    const activity = [0, 0, 0, 0, 0, 0, 0]; // Sun-Sat
+    history.forEach(item => {
+      try {
+        const date = new Date(item.transferDate);
+        const day = date.getDay(); // 0 (Sun) to 6 (Sat)
+        activity[day]++;
+      } catch (e) {
+        console.error(e);
+      }
+    });
+    return activity;
+  }, [activeView]);
+
+  const maxWeeklyActivityValue = Math.max(...weeklyActivityData, 1);
+  const daysOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
   return (
     <>
-      {/* Background neon glows */}
-      <div className="pulse-bg"></div>
-      <div className="pulse-bg cyan"></div>
+      {/* Hidden file input for Quick Send */}
+      <input
+        type="file"
+        ref={quickSendFileInputRef}
+        onChange={handleQuickSendFileChange}
+        style={{ display: 'none' }}
+      />
 
-      {/* Profile Header Settings Bar */}
-      {profile && (
-        <div style={{
-          maxWidth: '640px',
-          width: '92%',
-          margin: '1rem auto 0',
-          display: 'flex',
-          justifyContent: 'flex-end',
-          alignItems: 'center',
-          gap: '0.5rem',
-          padding: '0 0.5rem'
-        }}>
-          <div className="glass-panel" style={{
-            padding: '0.5rem 1.15rem',
-            borderRadius: '9999px',
-            boxShadow: 'none',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.5rem',
-            border: '1px solid var(--border-muted)',
-            background: 'rgba(255, 255, 255, 0.01)'
-          }}>
-            <User size={14} style={{ color: 'var(--accent-cyan)' }} />
-            {isEditingName ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                <input
-                  type="text"
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  style={{
-                    background: 'rgba(0,0,0,0.2)',
-                    border: '1px solid var(--border-muted)',
-                    borderRadius: '8px',
-                    color: 'var(--text-primary)',
-                    padding: '0.2rem 0.6rem',
-                    fontSize: '0.8rem',
-                    width: '120px'
-                  }}
-                  maxLength={15}
-                />
-                <button onClick={handleSaveName} style={{ background: 'var(--accent-cyan)', border: 'none', color: '#000', padding: '0.25rem', borderRadius: '6px', cursor: 'pointer', display: 'flex' }}>
-                  <Check size={12} />
-                </button>
-                <button onClick={() => { setIsEditingName(false); setNewName(profile.peerName); }} style={{ background: 'rgba(255, 255, 255, 0.05)', border: '1px solid var(--border-muted)', color: 'var(--text-secondary)', padding: '0.25rem', borderRadius: '6px', cursor: 'pointer', display: 'flex' }}>
-                  <X size={12} />
-                </button>
-              </div>
-            ) : (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                  Device Name: <strong style={{ color: 'var(--accent-cyan)' }}>{profile.peerName}</strong>
-                </span>
-                <button onClick={() => setIsEditingName(true)} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', padding: 0 }}>
-                  <Edit2 size={12} />
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Header */}
-      <header style={{
-        padding: '1.5rem 1.5rem 1.25rem',
-        maxWidth: '700px',
-        width: '100%',
-        margin: '0 auto',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        textAlign: 'center'
-      }}>
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '0.75rem',
-          marginBottom: '0.75rem',
-          background: 'rgba(255, 255, 255, 0.03)',
-          border: '1px solid var(--border-muted)',
-          padding: '0.5rem 1.25rem',
-          borderRadius: '9999px',
-          boxShadow: 'inset 0 1px 1px rgba(255, 255, 255, 0.05)'
-        }}>
-          <Zap size={18} style={{ color: 'var(--accent-purple)' }} />
-          <span style={{ fontSize: '0.85rem', fontWeight: 600, letterSpacing: '0.05em', color: 'var(--text-secondary)' }}>
-            100% SECURE DIRECT P2P TRANSFER
-          </span>
-        </div>
-
-        <h1 style={{ fontSize: '3.2rem', marginBottom: '0.75rem' }}>Skiima Share</h1>
-        <p style={{ maxWidth: '450px', fontSize: '1rem', color: 'var(--text-secondary)' }}>
-          Transfer files of any size directly between browsers without uploading to any cloud servers.
-        </p>
-      </header>
-
-      {/* Main Tab Controller & Panel */}
+      {/* Main Container */}
       <main style={{
         flexGrow: 1,
         maxWidth: '640px',
         width: '92%',
-        margin: '0 auto 3rem',
+        margin: '2rem auto 3rem',
         display: 'flex',
         flexDirection: 'column',
-        gap: '1.75rem'
+        gap: '1.5rem'
       }}>
-        
-        {/* Navigation Tabs */}
-        <div style={{
-          display: 'flex',
-          background: 'rgba(255, 255, 255, 0.02)',
-          border: '1px solid var(--border-muted)',
-          borderRadius: '9999px',
-          padding: '0.35rem',
-          gap: '0.35rem',
-          boxShadow: 'inset 0 2px 4px rgba(0, 0, 0, 0.2)',
-          overflowX: 'auto'
-        }}>
-          <button
-            onClick={() => handleTabChange('send')}
-            className={`nav-tab send ${activeTab === 'send' ? 'active' : ''}`}
-            style={{ flexGrow: 1, justifyContent: 'center', whiteSpace: 'nowrap' }}
-          >
-            <Send size={16} /> Send
-          </button>
-          
-          <button
-            onClick={() => handleTabChange('receive')}
-            className={`nav-tab receive ${activeTab === 'receive' ? 'active' : ''}`}
-            style={{ flexGrow: 1, justifyContent: 'center', whiteSpace: 'nowrap' }}
-          >
-            <Download size={16} /> Receive
-          </button>
 
-          <button
-            onClick={() => handleTabChange('contacts')}
-            className={`nav-tab send ${activeTab === 'contacts' ? 'active' : ''}`}
-            style={{ flexGrow: 1, justifyContent: 'center', whiteSpace: 'nowrap' }}
-          >
-            <Users size={16} /> Contacts
-          </button>
+        {/* ---------------- 1. DASHBOARD VIEW ---------------- */}
+        {activeView === 'dashboard' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+            
+            {/* Aesthetic Header */}
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              padding: '0.25rem 0.5rem',
+              marginTop: '0.5rem'
+            }}>
+              <div>
+                <h1 style={{ fontSize: '2rem', fontWeight: 700, margin: 0, letterSpacing: '-0.03em', color: 'var(--text-primary)' }}>
+                  Dashboard
+                </h1>
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontWeight: 500 }}>
+                  {getFormattedDate()}
+                </p>
+              </div>
 
-          <button
-            onClick={() => handleTabChange('history')}
-            className={`nav-tab receive ${activeTab === 'history' ? 'active' : ''}`}
-            style={{ flexGrow: 1, justifyContent: 'center', whiteSpace: 'nowrap' }}
-          >
-            <History size={16} /> History
-          </button>
-        </div>
+              {/* Colored Initial Avatar */}
+              {profile && (
+                <button
+                  onClick={() => handleViewChange('profile')}
+                  style={{
+                    width: '44px',
+                    height: '44px',
+                    borderRadius: '50%',
+                    background: 'linear-gradient(135deg, #8176f2 0%, #5649e7 100%)',
+                    color: '#ffffff',
+                    border: '3px solid #ffffff',
+                    boxShadow: '0 8px 16px rgba(129, 118, 242, 0.25)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontWeight: 700,
+                    fontSize: '1.1rem',
+                    cursor: 'pointer',
+                    outline: 'none',
+                    transition: 'var(--transition-fast)'
+                  }}
+                  className="btn-icon-copy"
+                  title="View Profile Settings"
+                >
+                  {profile.peerName.charAt(0).toUpperCase()}
+                </button>
+              )}
+            </div>
 
-        {/* Dynamic Panel Display */}
-        {activeTab === 'send' && (
+            {/* Quick Secure Badge */}
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.6rem',
+              background: '#ffffff',
+              border: '1px solid var(--border-muted)',
+              padding: '0.65rem 1.25rem',
+              borderRadius: '9999px',
+              boxShadow: 'var(--shadow-tactile)',
+              alignSelf: 'center'
+            }}>
+              <Zap size={15} style={{ color: 'var(--accent-purple)' }} />
+              <span style={{ fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.05em', color: 'var(--text-secondary)' }}>
+                100% SECURE DIRECT P2P SHARING
+              </span>
+            </div>
+
+            {/* Hero Cards Grid */}
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(2, 1fr)',
+              gap: '1.25rem'
+            }} className="hero-grid">
+              
+              {/* Send Hero (Rose Card) */}
+              <div style={{
+                background: 'linear-gradient(135deg, #ff5b7f 0%, #fc3657 100%)',
+                borderRadius: '24px',
+                padding: '1.5rem',
+                color: '#ffffff',
+                boxShadow: 'var(--shadow-rose)',
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'space-between',
+                minHeight: '210px',
+                transition: 'var(--transition-smooth)'
+              }}>
+                <div>
+                  <div style={{
+                    background: 'rgba(255, 255, 255, 0.18)',
+                    width: '40px',
+                    height: '40px',
+                    borderRadius: '12px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    marginBottom: '1rem'
+                  }}>
+                    <UploadCloud size={22} style={{ color: '#ffffff' }} />
+                  </div>
+                  <h3 style={{ fontSize: '1.25rem', fontWeight: 700, margin: '0 0 0.35rem 0' }}>Send</h3>
+                  <p style={{ fontSize: '0.8rem', color: 'rgba(255, 255, 255, 0.85)', margin: 0, lineHeight: 1.4 }}>
+                    Stream files P2P directly to any nearby device.
+                  </p>
+                </div>
+                <button
+                  onClick={() => handleViewChange('send')}
+                  style={{
+                    background: '#ffffff',
+                    border: 'none',
+                    color: '#fc3657',
+                    fontWeight: 700,
+                    fontSize: '0.85rem',
+                    padding: '0.65rem 1rem',
+                    borderRadius: '12px',
+                    cursor: 'pointer',
+                    boxShadow: '0 4px 10px rgba(0, 0, 0, 0.05)',
+                    transition: 'var(--transition-fast)'
+                  }}
+                  className="btn-icon-copy"
+                >
+                  Send File
+                </button>
+              </div>
+
+              {/* Receive Hero (Indigo Card) */}
+              <div style={{
+                background: 'linear-gradient(135deg, #8176f2 0%, #5649e7 100%)',
+                borderRadius: '24px',
+                padding: '1.5rem',
+                color: '#ffffff',
+                boxShadow: 'var(--shadow-indigo)',
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'space-between',
+                minHeight: '210px',
+                transition: 'var(--transition-smooth)'
+              }}>
+                <div>
+                  <div style={{
+                    background: 'rgba(255, 255, 255, 0.18)',
+                    width: '40px',
+                    height: '40px',
+                    borderRadius: '12px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    marginBottom: '1rem'
+                  }}>
+                    <DownloadCloud size={22} style={{ color: '#ffffff' }} />
+                  </div>
+                  <h3 style={{ fontSize: '1.25rem', fontWeight: 700, margin: '0 0 0.35rem 0' }}>Receive</h3>
+                  <p style={{ fontSize: '0.8rem', color: 'rgba(255, 255, 255, 0.85)', margin: 0, lineHeight: 1.4 }}>
+                    Enter room key code to fetch streamed P2P payloads.
+                  </p>
+                </div>
+                <button
+                  onClick={() => handleViewChange('receive')}
+                  style={{
+                    background: '#ffffff',
+                    border: 'none',
+                    color: '#5649e7',
+                    fontWeight: 700,
+                    fontSize: '0.85rem',
+                    padding: '0.65rem 1rem',
+                    borderRadius: '12px',
+                    cursor: 'pointer',
+                    boxShadow: '0 4px 10px rgba(0, 0, 0, 0.05)',
+                    transition: 'var(--transition-fast)'
+                  }}
+                  className="btn-icon-copy"
+                >
+                  Receive File
+                </button>
+              </div>
+
+            </div>
+
+            {/* Quick Send Scrollable Row */}
+            <div style={{
+              background: '#ffffff',
+              borderRadius: '24px',
+              padding: '1.25rem 1.5rem',
+              boxShadow: 'var(--shadow-premium)',
+              border: '1px solid var(--border-muted)'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.85rem' }}>
+                <h3 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+                  Quick Send Contacts
+                </h3>
+                {contacts.length > 0 && (
+                  <button
+                    onClick={() => handleViewChange('profile')}
+                    style={{ background: 'none', border: 'none', color: 'var(--accent-cyan)', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer', padding: 0 }}
+                  >
+                    Manage
+                  </button>
+                )}
+              </div>
+
+              {contacts.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '1rem 0.5rem', color: 'var(--text-secondary)' }}>
+                  <p style={{ fontSize: '0.85rem', margin: 0 }}>
+                    No contacts recorded yet. Connect with someone via key exchange to unlock magic Quick Share transfers!
+                  </p>
+                </div>
+              ) : (
+                <div style={{
+                  display: 'flex',
+                  gap: '1.25rem',
+                  overflowX: 'auto',
+                  padding: '0.25rem 0 0.5rem',
+                  scrollbarWidth: 'none'
+                }}>
+                  {contacts.map((contact) => {
+                    const online = isPeerOnline(contact.peerId);
+                    const displayName = activePresence[contact.peerId]?.peerName || contact.peerName;
+                    
+                    return (
+                      <div
+                        key={contact.peerId}
+                        onClick={() => handleQuickSendAvatarClick(contact.peerId, displayName)}
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          gap: '0.4rem',
+                          cursor: 'pointer',
+                          flexShrink: 0,
+                          width: '64px'
+                        }}
+                      >
+                        <div style={{ position: 'relative' }}>
+                          <div style={{
+                            width: '52px',
+                            height: '52px',
+                            borderRadius: '50%',
+                            background: online ? 'rgba(129, 118, 242, 0.08)' : '#f8fafc',
+                            border: online ? '2px solid var(--accent-cyan)' : '2px solid #e2e8f0',
+                            color: online ? 'var(--accent-cyan)' : 'var(--text-secondary)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontWeight: 700,
+                            fontSize: '1.1rem',
+                            boxShadow: online ? '0 0 10px rgba(129, 118, 242, 0.2)' : 'none',
+                            transition: 'var(--transition-smooth)'
+                          }}>
+                            {displayName.charAt(0).toUpperCase()}
+                          </div>
+                          
+                          {/* Pulser online tag */}
+                          {online && (
+                            <span style={{
+                              position: 'absolute',
+                              bottom: '1px',
+                              right: '1px',
+                              width: '12px',
+                              height: '12px',
+                              background: '#10b981',
+                              borderRadius: '50%',
+                              border: '2px solid #ffffff',
+                              boxShadow: '0 0 6px #10b981',
+                              animation: 'ringPulse 1.5s infinite'
+                            }} />
+                          )}
+                        </div>
+                        <span style={{
+                          fontSize: '0.75rem',
+                          fontWeight: 600,
+                          color: 'var(--text-secondary)',
+                          textAlign: 'center',
+                          width: '100%',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap'
+                        }}>
+                          {displayName}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Latest Activities Ledger (Recent Shares) */}
+            <div style={{
+              background: '#ffffff',
+              borderRadius: '24px',
+              padding: '1.25rem 1.5rem',
+              boxShadow: 'var(--shadow-premium)',
+              border: '1px solid var(--border-muted)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '1rem'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+                  Latest Activity
+                </h3>
+                {recentHistory.length > 0 && (
+                  <button
+                    onClick={() => handleViewChange('history_full')}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: 'var(--accent-cyan)',
+                      fontSize: '0.75rem',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      padding: 0,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.2rem'
+                    }}
+                  >
+                    See All <ChevronRight size={14} />
+                  </button>
+                )}
+              </div>
+
+              {recentHistory.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '1.5rem 0.5rem', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem' }}>
+                  <File size={32} style={{ color: 'var(--text-muted)' }} />
+                  <p style={{ fontSize: '0.85rem', margin: 0 }}>
+                    No file transfers yet. Send or receive files to build up your history ledger.
+                  </p>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                  {recentHistory.map((item) => {
+                    const isSender = item.peerRole === 'sender';
+                    return (
+                      <div
+                        key={item.id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          padding: '0.75rem 1rem',
+                          background: '#f8fafc',
+                          border: '1px solid #e2e8f0',
+                          borderRadius: '16px',
+                          gap: '0.85rem',
+                          justifyContent: 'space-between',
+                          boxShadow: 'var(--shadow-tactile)'
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', minWidth: 0, flexGrow: 1 }}>
+                          <div style={{
+                            background: isSender ? 'rgba(255, 91, 127, 0.08)' : 'rgba(129, 118, 242, 0.08)',
+                            color: isSender ? '#ff5b7f' : '#8176f2',
+                            padding: '0.55rem',
+                            borderRadius: '10px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            flexShrink: 0
+                          }}>
+                            {isSender ? <ArrowUpRight size={16} /> : <ArrowDownLeft size={16} />}
+                          </div>
+                          
+                          <div style={{ minWidth: 0 }}>
+                            <div
+                              style={{
+                                fontWeight: 600,
+                                fontSize: '0.85rem',
+                                color: 'var(--text-primary)',
+                                whiteSpace: 'nowrap',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                maxWidth: '180px'
+                              }}
+                              title={item.fileName}
+                            >
+                              {item.fileName}
+                            </div>
+                            <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: '0.15rem' }}>
+                              <span>{formatBytes(item.fileSize)}</span>
+                              <span>•</span>
+                              <span>{isSender ? `to ${item.peerName}` : `from ${item.peerName}`}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div style={{ textAlign: 'right', fontSize: '0.7rem', color: 'var(--text-muted)', flexShrink: 0 }}>
+                          <div>{formatDate(item.transferDate)}</div>
+                          <div style={{
+                            marginTop: '0.15rem',
+                            fontWeight: 700,
+                            color: item.status === 'success' ? '#10b981' : '#ef4444',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.03em',
+                            fontSize: '0.65rem'
+                          }}>
+                            {item.status === 'success' ? 'Success' : 'Failed'}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Feature Highlights Grid */}
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+              gap: '1.25rem',
+              marginTop: '0.25rem'
+            }}>
+              <div className="glass-panel" style={{ padding: '1.25rem', display: 'flex', gap: '0.875rem', alignItems: 'flex-start' }}>
+                <div style={{ background: 'rgba(255, 91, 127, 0.08)', color: '#ff5b7f', padding: '0.5rem', borderRadius: '10px' }}>
+                  <Shield size={20} />
+                </div>
+                <div>
+                  <h4 style={{ fontWeight: 700, fontSize: '0.9rem', marginBottom: '0.25rem', color: 'var(--text-primary)' }}>End-to-End Privacy</h4>
+                  <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>No intermediary cloud servers touch or retain your data payloads. Files stream directly browser-to-browser.</p>
+                </div>
+              </div>
+
+              <div className="glass-panel" style={{ padding: '1.25rem', display: 'flex', gap: '0.875rem', alignItems: 'flex-start' }}>
+                <div style={{ background: 'rgba(129, 118, 242, 0.08)', color: '#8176f2', padding: '0.5rem', borderRadius: '10px' }}>
+                  <Info size={20} />
+                </div>
+                <div>
+                  <h4 style={{ fontWeight: 700, fontSize: '0.9rem', marginBottom: '0.25rem', color: 'var(--text-primary)' }}>Unlimited File Sizes</h4>
+                  <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Send small files or gigabyte packages. Streams bypass direct size limits, leveraging WebRTC data channels.</p>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        )}
+
+        {/* ---------------- 2. SEND FILE VIEW ---------------- */}
+        {activeView === 'send' && (
           <SenderCard
             engine={engine}
             connectionStatus={connectionStatus}
             setConnectionStatus={setConnectionStatus}
             initialFile={quickSendFile}
             onClearInitialFile={() => setQuickSendFile(null)}
+            onBack={() => handleViewChange('dashboard')}
           />
         )}
-        
-        {activeTab === 'receive' && (
+
+        {/* ---------------- 3. RECEIVE FILE VIEW ---------------- */}
+        {activeView === 'receive' && (
           <ReceiverCard
             engine={engine}
             connectionStatus={connectionStatus}
             setConnectionStatus={setConnectionStatus}
+            onBack={() => handleViewChange('dashboard')}
           />
         )}
 
-        {activeTab === 'contacts' && (
-          <ContactsTab onSelectFileForContact={handleSelectFileForContact} />
-        )}
+        {/* ---------------- 4. FULL HISTORY VIEW ---------------- */}
+        {activeView === 'history_full' && (
+          <div className="glass-panel" style={{ padding: '2rem', minHeight: '400px', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifySelf: 'flex-start', borderBottom: '1px solid var(--border-muted)', paddingBottom: '1rem', marginBottom: '1.5rem', width: '100%' }}>
+              <button 
+                onClick={() => handleViewChange('dashboard')} 
+                style={{ 
+                  background: 'none', 
+                  border: 'none', 
+                  color: 'var(--text-secondary)', 
+                  cursor: 'pointer', 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  justifyContent: 'center',
+                  padding: '0.4rem',
+                  borderRadius: '50%',
+                  marginRight: '0.75rem'
+                }}
+                className="btn-icon-copy"
+              >
+                <X size={18} />
+              </button>
+              <h2 style={{ fontSize: '1.25rem', margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <History size={20} style={{ color: 'var(--accent-cyan)' }} /> Sharing History
+              </h2>
+              {fullHistory.length > 0 && (
+                <button
+                  onClick={handleClearHistory}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--accent-red)',
+                    fontSize: '0.8rem',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    padding: 0,
+                    marginLeft: 'auto'
+                  }}
+                >
+                  Clear All
+                </button>
+              )}
+            </div>
 
-        {activeTab === 'history' && (
-          <HistoryTab />
-        )}
-
-        {/* Feature Highlights Grid (Only show on Send/Receive tabs) */}
-        {(activeTab === 'send' || activeTab === 'receive') && (
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
-            gap: '1.25rem',
-            marginTop: '0.5rem'
-          }}>
-            <div className="glass-panel" style={{ padding: '1.25rem', display: 'flex', gap: '0.875rem', alignItems: 'flex-start' }}>
-              <div style={{ background: 'rgba(139, 92, 246, 0.1)', color: 'var(--accent-purple)', padding: '0.5rem', borderRadius: '10px' }}>
-                <Shield size={20} />
+            {fullHistory.length === 0 ? (
+              <div style={{
+                flexGrow: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'var(--text-secondary)',
+                textAlign: 'center',
+                gap: '1rem',
+                padding: '3rem 1rem'
+              }}>
+                <File size={36} style={{ color: 'var(--text-muted)' }} />
+                <div>
+                  <h4 style={{ color: 'var(--text-primary)', fontWeight: 700 }}>No File Shares Recorded</h4>
+                  <p style={{ fontSize: '0.85rem' }}>Completed transfers will appear here in chronological logs.</p>
+                </div>
               </div>
-              <div>
-                <h4 style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.25rem', color: 'var(--text-primary)' }}>End-to-End Privacy</h4>
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Files go direct from your device to the receiver. No intermediary storage servers see your data.</p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem', overflowY: 'auto', maxHeight: '500px' }}>
+                {fullHistory.map((item) => {
+                  const isSender = item.peerRole === 'sender';
+                  return (
+                    <div
+                      key={item.id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        padding: '0.85rem 1rem',
+                        background: '#f8fafc',
+                        border: '1px solid #e2e8f0',
+                        borderRadius: '16px',
+                        gap: '0.85rem',
+                        justifyContent: 'space-between',
+                        boxShadow: 'var(--shadow-tactile)'
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', minWidth: 0, flexGrow: 1 }}>
+                        <div style={{
+                          background: isSender ? 'rgba(255, 91, 127, 0.08)' : 'rgba(129, 118, 242, 0.08)',
+                          color: isSender ? '#ff5b7f' : '#8176f2',
+                          padding: '0.55rem',
+                          borderRadius: '10px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          flexShrink: 0
+                        }}>
+                          {isSender ? <ArrowUpRight size={16} /> : <ArrowDownLeft size={16} />}
+                        </div>
+                        
+                        <div style={{ minWidth: 0 }}>
+                          <div
+                            style={{
+                              fontWeight: 600,
+                              fontSize: '0.85rem',
+                              color: 'var(--text-primary)',
+                              whiteSpace: 'nowrap',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              maxWidth: '220px'
+                            }}
+                            title={item.fileName}
+                          >
+                            {item.fileName}
+                          </div>
+                          <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: '0.15rem' }}>
+                            <span>{formatBytes(item.fileSize)}</span>
+                            <span>•</span>
+                            <span>{isSender ? `to ${item.peerName}` : `from ${item.peerName}`}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{ textAlign: 'right', fontSize: '0.7rem', color: 'var(--text-muted)', flexShrink: 0 }}>
+                        <div>{formatDate(item.transferDate)}</div>
+                        <div style={{
+                          marginTop: '0.15rem',
+                          fontWeight: 700,
+                          color: item.status === 'success' ? '#10b981' : '#ef4444',
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.03em',
+                          fontSize: '0.65rem'
+                        }}>
+                          {item.status === 'success' ? 'Success' : 'Failed'}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ---------------- 5. USER PROFILE SHEET VIEW ---------------- */}
+        {activeView === 'profile' && (
+          <div className="glass-panel" style={{ padding: '2rem', minHeight: '400px', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+            
+            {/* Header controls */}
+            <div style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid var(--border-muted)', paddingBottom: '1rem' }}>
+              <button 
+                onClick={() => handleViewChange('dashboard')} 
+                style={{ 
+                  background: 'none', 
+                  border: 'none', 
+                  color: 'var(--text-secondary)', 
+                  cursor: 'pointer', 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  justifyContent: 'center',
+                  padding: '0.4rem',
+                  borderRadius: '50%',
+                  marginRight: '0.75rem'
+                }}
+                className="btn-icon-copy"
+              >
+                <X size={18} />
+              </button>
+              <h2 style={{ fontSize: '1.25rem', margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <User size={20} style={{ color: 'var(--accent-cyan)' }} /> User Profile
+              </h2>
+            </div>
+
+            {/* Profile Initials Block & Editing Device Name */}
+            {profile && (
+              <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: '1rem',
+                background: '#f8fafc',
+                border: '1px solid #e2e8f0',
+                padding: '1.5rem',
+                borderRadius: '24px',
+                boxShadow: 'var(--shadow-tactile)'
+              }}>
+                <div style={{
+                  width: '72px',
+                  height: '72px',
+                  borderRadius: '50%',
+                  background: 'linear-gradient(135deg, #ff5b7f 0%, #fc3657 100%)',
+                  color: '#ffffff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontWeight: 700,
+                  fontSize: '1.75rem',
+                  boxShadow: 'var(--shadow-rose)'
+                }}>
+                  {profile.peerName.charAt(0).toUpperCase()}
+                </div>
+
+                <div style={{ textAlign: 'center', width: '100%' }}>
+                  {isEditingName ? (
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', maxWidth: '280px', margin: '0 auto' }}>
+                      <input
+                        type="text"
+                        value={newName}
+                        onChange={(e) => setNewName(e.target.value)}
+                        className="input-field"
+                        style={{
+                          padding: '0.4rem 0.8rem',
+                          fontSize: '0.9rem',
+                          textAlign: 'center'
+                        }}
+                        maxLength={15}
+                      />
+                      <button onClick={handleSaveName} style={{ background: 'var(--accent-cyan)', border: 'none', color: '#fff', padding: '0.45rem', borderRadius: '8px', cursor: 'pointer', display: 'flex' }}>
+                        <Check size={16} />
+                      </button>
+                      <button onClick={() => { setIsEditingName(false); setNewName(profile.peerName); }} style={{ background: '#ffffff', border: '1px solid #cbd5e1', color: 'var(--text-secondary)', padding: '0.45rem', borderRadius: '8px', cursor: 'pointer', display: 'flex' }}>
+                        <X size={16} />
+                      </button>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}>
+                      <span style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                        {profile.peerName}
+                      </span>
+                      <button onClick={() => setIsEditingName(true)} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', padding: '0.2rem' }}>
+                        <Edit2 size={14} />
+                      </button>
+                    </div>
+                  )}
+                  <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem', fontFamily: 'var(--font-mono)' }}>
+                    Device ID: {profile.peerId}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Real-time Stats Grid */}
+            <div>
+              <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '0.65rem' }}>
+                Sharing Statistics
+              </h3>
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(3, 1fr)',
+                gap: '0.75rem'
+              }}>
+                <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', padding: '0.85rem 0.5rem', borderRadius: '16px', textAlign: 'center', boxShadow: 'var(--shadow-tactile)' }}>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em', marginBottom: '0.25rem' }}>Shares</div>
+                  <div style={{ fontSize: '1.25rem', fontWeight: 700, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{statsCalculated.total}</div>
+                </div>
+                <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', padding: '0.85rem 0.5rem', borderRadius: '16px', textAlign: 'center', boxShadow: 'var(--shadow-tactile)' }}>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em', marginBottom: '0.25rem' }}>Sent</div>
+                  <div style={{ fontSize: '1.25rem', fontWeight: 700, color: '#ff5b7f', fontFamily: 'var(--font-mono)' }}>{statsCalculated.sent}</div>
+                </div>
+                <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', padding: '0.85rem 0.5rem', borderRadius: '16px', textAlign: 'center', boxShadow: 'var(--shadow-tactile)' }}>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em', marginBottom: '0.25rem' }}>Received</div>
+                  <div style={{ fontSize: '1.25rem', fontWeight: 700, color: '#8176f2', fontFamily: 'var(--font-mono)' }}>{statsCalculated.received}</div>
+                </div>
               </div>
             </div>
 
-            <div className="glass-panel" style={{ padding: '1.25rem', display: 'flex', gap: '0.875rem', alignItems: 'flex-start' }}>
-              <div style={{ background: 'rgba(6, 182, 212, 0.1)', color: 'var(--accent-cyan)', padding: '0.5rem', borderRadius: '10px' }}>
-                <Info size={20} />
-              </div>
-              <div>
-                <h4 style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.25rem', color: 'var(--text-primary)' }}>Zero File Limits</h4>
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Stream gigabyte files securely. Speed is limited only by your direct network connection bandwidth.</p>
+            {/* Aesthetic CSS Activity Bar Chart */}
+            <div>
+              <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '0.65rem' }}>
+                Weekly Activity
+              </h3>
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'flex-end',
+                height: '135px',
+                padding: '1.15rem 0.75rem 0.75rem',
+                background: '#f8fafc',
+                borderRadius: '20px',
+                border: '1px solid #e2e8f0',
+                boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.01)'
+              }}>
+                {weeklyActivityData.map((val, idx) => {
+                  const pct = (val / maxWeeklyActivityValue) * 100;
+                  const heightPct = val > 0 ? Math.max(pct, 12) : 6;
+                  
+                  return (
+                    <div key={idx} style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      gap: '0.35rem',
+                      flexGrow: 1
+                    }}>
+                      <span style={{
+                        fontSize: '0.68rem',
+                        color: val > 0 ? 'var(--accent-cyan)' : 'var(--text-muted)',
+                        fontWeight: 700,
+                        fontFamily: 'var(--font-mono)'
+                      }}>
+                        {val}
+                      </span>
+                      <div style={{
+                        width: '12px',
+                        height: '64px',
+                        background: '#e2e8f0',
+                        borderRadius: '9999px',
+                        position: 'relative',
+                        overflow: 'hidden'
+                      }}>
+                        <div style={{
+                          position: 'absolute',
+                          bottom: 0,
+                          left: 0,
+                          right: 0,
+                          height: `${heightPct}%`,
+                          background: val > 0 ? 'linear-gradient(180deg, var(--accent-cyan) 0%, #5649e7 100%)' : '#cbd5e1',
+                          borderRadius: '9999px',
+                          transition: 'height 0.4s ease-out'
+                        }} />
+                      </div>
+                      <span style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-secondary)' }}>
+                        {daysOfWeek[idx]}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
+
+            {/* Saved Contacts Registry management list */}
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.65rem' }}>
+                <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+                  Contacts Registry
+                </h3>
+                {contacts.length > 0 && (
+                  <button
+                    onClick={handleClearContacts}
+                    style={{ background: 'none', border: 'none', color: 'var(--accent-red)', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer', padding: 0 }}
+                  >
+                    Clear All
+                  </button>
+                )}
+              </div>
+
+              {contacts.length === 0 ? (
+                <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', padding: '1.25rem', borderRadius: '16px', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+                  No saved contacts yet. Direct P2P transfers save linked contacts automatically.
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem', overflowY: 'auto', maxHeight: '180px' }}>
+                  {contacts.map((contact) => {
+                    const online = isPeerOnline(contact.peerId);
+                    const displayName = activePresence[contact.peerId]?.peerName || contact.peerName;
+                    
+                    return (
+                      <div
+                        key={contact.peerId}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          padding: '0.65rem 0.85rem',
+                          background: '#f8fafc',
+                          border: '1px solid #e2e8f0',
+                          borderRadius: '14px',
+                          gap: '0.75rem',
+                          justifyContent: 'space-between'
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', minWidth: 0 }}>
+                          <div style={{
+                            width: '32px',
+                            height: '32px',
+                            borderRadius: '50%',
+                            background: online ? 'rgba(129, 118, 242, 0.08)' : '#e2e8f0',
+                            color: online ? 'var(--accent-cyan)' : 'var(--text-secondary)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontWeight: 700,
+                            fontSize: '0.85rem',
+                            flexShrink: 0
+                          }}>
+                            {displayName.charAt(0).toUpperCase()}
+                          </div>
+                          
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: 600, fontSize: '0.8rem', color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '140px' }}>
+                              {displayName}
+                            </div>
+                            <div style={{ fontSize: '0.65rem', color: online ? '#10b981' : 'var(--text-muted)', fontWeight: 600 }}>
+                              {online ? 'ONLINE NOW' : 'Offline'}
+                            </div>
+                          </div>
+                        </div>
+
+                        {!online && (
+                          <a
+                            href={getWhatsAppBeepUrl(displayName)}
+                            target="_blank"
+                            rel="noreferrer"
+                            style={{
+                              background: '#ffffff',
+                              border: '1px solid #cbd5e1',
+                              color: '#25D366',
+                              padding: '0.3rem 0.6rem',
+                              fontSize: '0.7rem',
+                              fontWeight: 600,
+                              textDecoration: 'none',
+                              borderRadius: '8px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '0.25rem'
+                            }}
+                          >
+                            <MessageCircle size={12} /> Beep
+                          </a>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
           </div>
         )}
 
       </main>
 
       {/* Footer */}
-      <footer>
-        <div style={{ display: 'flex', justifyContent: 'center', gap: '1.5rem', marginBottom: '1rem' }}>
-          <a href="https://github.com" target="_blank" rel="noreferrer" style={{ color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.4rem', textDecoration: 'none', fontSize: '0.85rem' }}>
-            <Globe size={16} /> Web
+      <footer style={{
+        marginTop: 'auto',
+        padding: '2rem 1.5rem',
+        textAlign: 'center',
+        background: '#ffffff',
+        borderTop: '1px solid var(--border-muted)',
+        width: '100%'
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'center', gap: '1.5rem', marginBottom: '0.85rem' }}>
+          <a href="https://github.com/penlighty/skiima" target="_blank" rel="noreferrer" style={{ color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.4rem', textDecoration: 'none', fontSize: '0.85rem', fontWeight: 500 }}>
+            <Globe size={16} />penlighty/skiima
           </a>
         </div>
-        <p>© 2026 Skiima Share. Built with WebRTC, Firebase & React.</p>
+        <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: 0 }}>
+          © 2026 Skiima Share. Built with WebRTC direct P2P data channels, Firestore presence signaling & React.
+        </p>
       </footer>
 
-      {/* === MODAL OVERLAY: INBOUND DIRECT REQUEST === */}
+      {/* === MODAL OVERLAY: INBOUND DIRECT TRANSFER REQUEST === */}
       {inboundRequest && (
         <div style={{
           position: 'fixed',
@@ -420,8 +1270,8 @@ function App() {
           left: 0,
           width: '100%',
           height: '100%',
-          background: 'rgba(15, 12, 27, 0.7)',
-          backdropFilter: 'blur(8px)',
+          background: 'rgba(15, 12, 27, 0.4)',
+          backdropFilter: 'blur(6px)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -429,59 +1279,60 @@ function App() {
           padding: '1rem'
         }}>
           <div className="glass-panel" style={{
-            maxWidth: '440px',
+            maxWidth: '400px',
             width: '100%',
             padding: '2rem',
             textAlign: 'center',
             display: 'flex',
             flexDirection: 'column',
-            gap: '1.5rem',
-            border: '1px solid rgba(6, 182, 212, 0.2)',
-            boxShadow: '0 20px 50px rgba(0,0,0,0.5)'
+            gap: '1.25rem',
+            border: '1px solid rgba(129, 118, 242, 0.2)',
+            boxShadow: '0 25px 50px -12px rgba(13, 20, 43, 0.15)'
           }}>
             <div>
               <div style={{
-                background: 'rgba(6, 182, 212, 0.1)',
+                background: 'rgba(129, 118, 242, 0.08)',
                 color: 'var(--accent-cyan)',
                 padding: '1rem',
                 borderRadius: '50%',
                 display: 'inline-flex',
-                marginBottom: '1rem',
-                boxShadow: '0 0 20px rgba(6, 182, 212, 0.1)'
+                marginBottom: '0.85rem',
+                boxShadow: '0 8px 16px rgba(129, 118, 242, 0.1)'
               }}>
-                <Download size={28} />
+                <Download size={24} />
               </div>
-              <h3 style={{ margin: '0 0 0.5rem 0', fontWeight: 600, color: 'var(--text-primary)' }}>Incoming Magic Transfer</h3>
-              <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>
-                <strong style={{ color: 'var(--accent-cyan)' }}>{inboundRequest.senderName}</strong> wants to send you a file directly:
+              <h3 style={{ margin: '0 0 0.35rem 0', fontWeight: 700, color: 'var(--text-primary)', fontSize: '1.2rem' }}>Magic Transfer Inbound</h3>
+              <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: 0, lineHeight: 1.4 }}>
+                <strong style={{ color: 'var(--accent-cyan)' }}>{inboundRequest.senderName}</strong> wants to stream a file to you directly:
               </p>
             </div>
 
             {/* File details card */}
-            <div className="file-card" style={{ background: 'rgba(255, 255, 255, 0.02)', borderColor: 'var(--border-muted)', padding: '0.85rem 1rem' }}>
-              <div className="file-card-icon" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)' }}>
-                <File size={20} />
+            <div className="file-card" style={{ background: '#f8fafc', borderColor: '#e2e8f0', padding: '0.75rem 0.85rem', marginBottom: 0 }}>
+              <div className="file-card-icon" style={{ background: 'rgba(13, 20, 43, 0.04)', color: 'var(--text-secondary)', padding: '0.65rem' }}>
+                <File size={18} />
               </div>
               <div className="file-info" style={{ textAlign: 'left' }}>
-                <div className="file-name" style={{ fontSize: '0.85rem' }} title={inboundRequest.fileMetadata.name}>
+                <div className="file-name" style={{ fontSize: '0.8rem', fontWeight: 600 }} title={inboundRequest.fileMetadata.name}>
                   {inboundRequest.fileMetadata.name}
                 </div>
-                <div className="file-size" style={{ fontSize: '0.75rem' }}>
+                <div className="file-size" style={{ fontSize: '0.7rem' }}>
                   {formatBytes(inboundRequest.fileMetadata.size)}
                 </div>
               </div>
             </div>
 
-            <div style={{ display: 'flex', gap: '0.85rem', marginTop: '0.5rem' }}>
+            <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.25rem' }}>
               <button
                 onClick={handleDeclineInbound}
                 className="btn-primary"
                 style={{
                   flexGrow: 1,
-                  background: 'rgba(239, 68, 68, 0.1)',
-                  border: '1px solid rgba(239, 68, 68, 0.2)',
+                  background: '#fef2f2',
+                  border: '1px solid rgba(239, 68, 68, 0.15)',
                   color: 'var(--accent-red)',
-                  boxShadow: 'none'
+                  boxShadow: 'none',
+                  padding: '0.65rem'
                 }}
               >
                 Decline
@@ -490,7 +1341,7 @@ function App() {
               <button
                 onClick={handleAcceptInbound}
                 className="btn-cyan"
-                style={{ flexGrow: 2 }}
+                style={{ flexGrow: 2, padding: '0.65rem' }}
               >
                 Accept & Receive
               </button>
@@ -499,7 +1350,7 @@ function App() {
         </div>
       )}
 
-      {/* === MODAL OVERLAY: OUTBOUND QUICK SEND REQUEST === */}
+      {/* === MODAL OVERLAY: OUTBOUND QUICK SEND LOADER === */}
       {outboundStatus && outboundMetadata && (
         <div style={{
           position: 'fixed',
@@ -507,8 +1358,8 @@ function App() {
           left: 0,
           width: '100%',
           height: '100%',
-          background: 'rgba(15, 12, 27, 0.7)',
-          backdropFilter: 'blur(8px)',
+          background: 'rgba(15, 12, 27, 0.4)',
+          backdropFilter: 'blur(6px)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -516,33 +1367,33 @@ function App() {
           padding: '1rem'
         }}>
           <div className="glass-panel" style={{
-            maxWidth: '440px',
+            maxWidth: '400px',
             width: '100%',
             padding: '2rem',
             textAlign: 'center',
             display: 'flex',
             flexDirection: 'column',
-            gap: '1.5rem',
-            border: outboundStatus === 'declined' ? '1px solid rgba(239, 68, 68, 0.2)' : '1px solid rgba(139, 92, 246, 0.2)',
-            boxShadow: '0 20px 50px rgba(0,0,0,0.5)'
+            gap: '1.25rem',
+            border: outboundStatus === 'declined' ? '1px solid rgba(239, 68, 68, 0.2)' : '1px solid rgba(129, 118, 242, 0.2)',
+            boxShadow: '0 25px 50px -12px rgba(13, 20, 43, 0.15)'
           }}>
             {outboundStatus === 'pending' && (
               <div>
-                <div style={{ position: 'relative', display: 'inline-flex', marginBottom: '1rem' }}>
+                <div style={{ position: 'relative', display: 'inline-flex', marginBottom: '0.85rem' }}>
                   <div style={{
-                    background: 'rgba(139, 92, 246, 0.1)',
-                    color: 'var(--accent-purple)',
+                    background: 'rgba(255, 91, 127, 0.08)',
+                    color: '#ff5b7f',
                     padding: '1rem',
                     borderRadius: '50%',
                     display: 'inline-flex'
                   }}>
-                    <Radio size={28} className="ping-animate" />
+                    <Radio size={24} style={{ animation: 'ringPulse 1.5s infinite' }} />
                   </div>
                 </div>
                 
-                <h3 style={{ margin: '0 0 0.5rem 0', fontWeight: 600, color: 'var(--text-primary)' }}>Sending Transfer Request</h3>
-                <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>
-                  Waiting for <strong style={{ color: 'var(--accent-purple)' }}>{outboundTargetName}</strong> to accept your file:
+                <h3 style={{ margin: '0 0 0.35rem 0', fontWeight: 700, color: 'var(--text-primary)', fontSize: '1.2rem' }}>Awaiting Approval</h3>
+                <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: 0, lineHeight: 1.4 }}>
+                  Waiting for <strong style={{ color: 'var(--accent-purple)' }}>{outboundTargetName}</strong> to accept your stream request:
                 </p>
               </div>
             )}
@@ -550,18 +1401,18 @@ function App() {
             {outboundStatus === 'accepted' && (
               <div>
                 <div style={{
-                  background: 'rgba(16, 185, 129, 0.1)',
+                  background: 'rgba(16, 185, 129, 0.08)',
                   color: 'var(--accent-green)',
                   padding: '1rem',
                   borderRadius: '50%',
                   display: 'inline-flex',
-                  marginBottom: '1rem'
+                  marginBottom: '0.85rem'
                 }}>
-                  <Check size={28} />
+                  <Check size={24} />
                 </div>
-                <h3 style={{ margin: '0 0 0.5rem 0', fontWeight: 600, color: 'var(--text-primary)' }}>Request Accepted!</h3>
-                <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>
-                  Connecting peer and launching WebRTC direct stream channel...
+                <h3 style={{ margin: '0 0 0.35rem 0', fontWeight: 700, color: 'var(--text-primary)', fontSize: '1.2rem' }}>Request Approved!</h3>
+                <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: 0 }}>
+                  Connecting WebRTC channel and initiating peer direct data stream...
                 </p>
               </div>
             )}
@@ -569,32 +1420,33 @@ function App() {
             {outboundStatus === 'declined' && (
               <div>
                 <div style={{
-                  background: 'rgba(239, 68, 68, 0.1)',
+                  background: '#fef2f2',
                   color: 'var(--accent-red)',
                   padding: '1rem',
                   borderRadius: '50%',
                   display: 'inline-flex',
-                  marginBottom: '1rem'
+                  marginBottom: '0.85rem',
+                  border: '1px solid rgba(239, 68, 68, 0.15)'
                 }}>
-                  <AlertTriangle size={28} />
+                  <AlertTriangle size={24} />
                 </div>
-                <h3 style={{ margin: '0 0 0.5rem 0', fontWeight: 600, color: 'var(--text-primary)' }}>Request Declined</h3>
-                <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>
+                <h3 style={{ margin: '0 0 0.35rem 0', fontWeight: 700, color: 'var(--text-primary)', fontSize: '1.2rem' }}>Request Declined</h3>
+                <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: 0 }}>
                   <strong style={{ color: 'var(--accent-red)' }}>{outboundTargetName}</strong> declined your transfer request.
                 </p>
               </div>
             )}
 
             {/* File info card */}
-            <div className="file-card" style={{ background: 'rgba(255, 255, 255, 0.02)', borderColor: 'var(--border-muted)', padding: '0.85rem 1rem' }}>
-              <div className="file-card-icon" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)' }}>
-                <File size={20} />
+            <div className="file-card" style={{ background: '#f8fafc', borderColor: '#e2e8f0', padding: '0.75rem 0.85rem', marginBottom: 0 }}>
+              <div className="file-card-icon" style={{ background: 'rgba(13, 20, 43, 0.04)', color: 'var(--text-secondary)', padding: '0.65rem' }}>
+                <File size={18} />
               </div>
               <div className="file-info" style={{ textAlign: 'left' }}>
-                <div className="file-name" style={{ fontSize: '0.85rem' }} title={outboundMetadata.name}>
+                <div className="file-name" style={{ fontSize: '0.8rem', fontWeight: 600 }} title={outboundMetadata.name}>
                   {outboundMetadata.name}
                 </div>
-                <div className="file-size" style={{ fontSize: '0.75rem' }}>
+                <div className="file-size" style={{ fontSize: '0.7rem' }}>
                   {formatBytes(outboundMetadata.size)}
                 </div>
               </div>
@@ -607,10 +1459,11 @@ function App() {
                   className="btn-primary"
                   style={{
                     width: '100%',
-                    background: 'rgba(239, 68, 68, 0.1)',
-                    border: '1px solid rgba(239, 68, 68, 0.2)',
+                    background: '#fef2f2',
+                    border: '1px solid rgba(239, 68, 68, 0.15)',
                     color: 'var(--accent-red)',
-                    boxShadow: 'none'
+                    boxShadow: 'none',
+                    padding: '0.65rem'
                   }}
                 >
                   Cancel Request
@@ -619,7 +1472,7 @@ function App() {
                 <button
                   onClick={handleCancelOutbound}
                   className="btn-primary"
-                  style={{ width: '100%', border: '1px solid var(--border-muted)' }}
+                  style={{ width: '100%', border: '1px solid #cbd5e1', background: '#ffffff', color: 'var(--text-primary)', boxShadow: 'none', padding: '0.65rem' }}
                 >
                   Close
                 </button>
@@ -628,6 +1481,21 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* Global CSS Pulser Keyframes for indicators */}
+      <style>{`
+        @keyframes ringPulse {
+          0% {
+            box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
+          }
+          70% {
+            box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);
+          }
+          100% {
+            box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+          }
+        }
+      `}</style>
     </>
   );
 }
