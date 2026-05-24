@@ -145,7 +145,7 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
 
   // B. Auto-reconnect on accidental disconnection
   useEffect(() => {
-    const activeCode = engine.roomCode || code;
+    const activeCode = engine.roomCode;
     if (
       activeCode && 
       !transferDone && 
@@ -157,7 +157,7 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
       }, 2000);
       return () => clearTimeout(timer);
     }
-  }, [connectionStatus, transferDone, code, engine]);
+  }, [connectionStatus, transferDone, engine]);
 
   const handleConnect = (e: React.FormEvent) => {
     e.preventDefault();
