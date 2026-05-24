@@ -603,7 +603,7 @@ export class P2PEngine {
       console.error('[WebRTC] RTCDataChannel error:', err);
       logFailedTransfer();
       if (this.onError) {
-        this.onError('P2P connection experienced an engine failure.');
+        this.onError('P2P connection was lost or closed.');
       }
       this.updateStatus('disconnected');
     };
@@ -731,6 +731,14 @@ export class P2PEngine {
               case 'stop':
                 console.log('[WebRTC] Receiver got stop notification');
                 if (this.onTransferStopped) this.onTransferStopped('Sender cancelled the transfer.');
+                this.cleanup();
+                break;
+
+              case 'disconnect':
+                console.log('[WebRTC] Peer disconnected manually');
+                if (this.onError) {
+                  this.onError('The other user has manually disconnected.');
+                }
                 this.cleanup();
                 break;
 
@@ -874,7 +882,15 @@ export class P2PEngine {
   /**
    * Disconnects and cleans up all active peer allocations
    */
-  public cleanup(): void {
+  public cleanup(manual = false): void {
+    if (manual && this.dataChannel && this.dataChannel.readyState === 'open') {
+      try {
+        this.dataChannel.send(JSON.stringify({ type: 'disconnect' }));
+        console.log('[WebRTC] Sent manual disconnect notification to peer');
+      } catch (e) {
+        console.warn('Failed to send manual disconnect notification:', e);
+      }
+    }
     if (this.unsubscribeRoom) {
       this.unsubscribeRoom();
       this.unsubscribeRoom = null;

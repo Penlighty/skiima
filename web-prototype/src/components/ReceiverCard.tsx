@@ -185,7 +185,7 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
   };
 
   const handleReset = () => {
-    engine.cleanup();
+    engine.cleanup(true);
     setCode('');
     setFileMetadata(null);
     setStats(null);

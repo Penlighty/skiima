@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
-import { Download, Zap, Info, Shield, Globe, History, User, Edit2, Check, X, Radio, File, AlertTriangle, ArrowUpRight, ArrowDownLeft, UploadCloud, DownloadCloud, ChevronRight, MessageCircle, Sun, Moon, Monitor } from 'lucide-react';
+import { Download, Zap, Info, Shield, History, User, Edit2, Check, X, Radio, File, AlertTriangle, ArrowUpRight, ArrowDownLeft, UploadCloud, DownloadCloud, ChevronRight, MessageCircle, Sun, Moon, Monitor } from 'lucide-react';
 import { P2PEngine } from './lib/P2PEngine';
 import type { ConnectionStatus } from './lib/P2PEngine';
 import { SenderCard } from './components/SenderCard';
@@ -128,6 +128,7 @@ function App() {
     // Set offline on tab close or navigate away
     const handleUnload = () => {
       presence.publishPresence(prof.peerId, '', 'offline');
+      engine.cleanup(true);
     };
     window.addEventListener('beforeunload', handleUnload);
 
@@ -1391,9 +1392,7 @@ function App() {
         width: '100%'
       }}>
         <div style={{ display: 'flex', justifyContent: 'center', gap: '1.5rem', marginBottom: '0.85rem' }}>
-          <a href="https://github.com/penlighty/skiima" target="_blank" rel="noreferrer" style={{ color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.4rem', textDecoration: 'none', fontSize: '0.85rem', fontWeight: 500 }}>
-            <Globe size={16} />penlighty/skiima
-          </a>
+          <img src="/favicon.svg" alt="Skiima Logo" style={{ width: '28px', height: '26px' }} />
         </div>
         <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: 0 }}>
           © 2026 Skiima Share. Built with WebRTC direct P2P data channels, Firestore presence signaling & React.

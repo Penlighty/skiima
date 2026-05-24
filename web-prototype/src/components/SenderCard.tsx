@@ -313,7 +313,7 @@ export const SenderCard: React.FC<SenderCardProps> = ({
   };
 
   const handleReset = () => {
-    engine.cleanup();
+    engine.cleanup(true);
     setFile(null);
     setRoomCode('');
     setStats(null);
