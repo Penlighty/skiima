@@ -28,6 +28,37 @@ export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected-p2p' |
 const CHUNK_SIZE = 64 * 1024; // 64KB chunks
 const BUFFER_THRESHOLD = 1024 * 1024; // 1MB buffer threshold for backpressure
 
+/** Shared ICE server list: multiple STUN + free TURN fallbacks for NAT traversal */
+const ICE_SERVERS: RTCIceServer[] = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
+  { urls: 'stun:stun4.l.google.com:19302' },
+  // freestun.net — no-auth free TURN relay
+  {
+    urls: ['turn:freestun.net:3478', 'turns:freestun.net:5349'],
+    username: 'free',
+    credential: 'free'
+  },
+  // Metered Open Relay TURN (multiple ports for firewall resilience)
+  {
+    urls: 'turn:openrelay.metered.ca:80',
+    username: 'openrelayproject',
+    credential: 'openrelayproject'
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443',
+    username: 'openrelayproject',
+    credential: 'openrelayproject'
+  },
+  {
+    urls: 'turns:openrelay.metered.ca:443',
+    username: 'openrelayproject',
+    credential: 'openrelayproject'
+  }
+];
+
 export class P2PEngine {
   private pc: RTCPeerConnection | null = null;
   private dataChannel: RTCDataChannel | null = null;
@@ -64,29 +95,9 @@ export class P2PEngine {
     const roomCode = customId;
     this.roomCode = roomCode;
 
-    const peerOptions = {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun.services.mozilla.com' },
-        // Public free TURN relay to punch through carrier symmetric NATs / mobile hotspots
-        {
-          urls: 'turn:openrelay.metered.ca:80',
-          username: 'openrelay',
-          credential: 'openrelay'
-        },
-        {
-          urls: 'turn:openrelay.metered.ca:443',
-          username: 'openrelay',
-          credential: 'openrelay'
-        },
-        {
-          urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-          username: 'openrelay',
-          credential: 'openrelay'
-        }
-      ]
+    const peerOptions: RTCConfiguration = {
+      iceServers: ICE_SERVERS,
+      iceTransportPolicy: 'all'
     };
 
     try {
@@ -107,14 +118,21 @@ export class P2PEngine {
         }
       };
 
-      // Listen for connection state changes
+      // Listen for connection state changes (Sender)
       pc.onconnectionstatechange = () => {
-        console.log('[WebRTC] Connection state changed:', pc.connectionState);
+        console.log('[WebRTC] Sender connection state:', pc.connectionState);
         if (pc.connectionState === 'connected') {
           this.detectIceCandidateType(pc);
-        } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        } else if (pc.connectionState === 'failed') {
+          console.warn('[WebRTC] Sender connection failed, attempting ICE restart...');
+          pc.restartIce();
+        } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'closed') {
           this.updateStatus('disconnected');
         }
+      };
+
+      pc.onicecandidateerror = (ev: RTCPeerConnectionIceErrorEvent) => {
+        console.warn('[ICE] Candidate error:', ev.errorCode, ev.errorText, ev.url);
       };
 
       // Create the WebRTC Session Offer
@@ -180,28 +198,9 @@ export class P2PEngine {
     const roomCode = senderPeerId;
     this.roomCode = roomCode;
 
-    const peerOptions = {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun.services.mozilla.com' },
-        {
-          urls: 'turn:openrelay.metered.ca:80',
-          username: 'openrelay',
-          credential: 'openrelay'
-        },
-        {
-          urls: 'turn:openrelay.metered.ca:443',
-          username: 'openrelay',
-          credential: 'openrelay'
-        },
-        {
-          urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-          username: 'openrelay',
-          credential: 'openrelay'
-        }
-      ]
+    const peerOptions: RTCConfiguration = {
+      iceServers: ICE_SERVERS,
+      iceTransportPolicy: 'all'
     };
 
     try {
@@ -224,14 +223,21 @@ export class P2PEngine {
         }
       };
 
-      // Listen for connection state changes
+      // Listen for connection state changes (Receiver)
       pc.onconnectionstatechange = () => {
-        console.log('[WebRTC] Connection state changed:', pc.connectionState);
+        console.log('[WebRTC] Receiver connection state:', pc.connectionState);
         if (pc.connectionState === 'connected') {
           this.detectIceCandidateType(pc);
-        } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        } else if (pc.connectionState === 'failed') {
+          console.warn('[WebRTC] Receiver connection failed, attempting ICE restart...');
+          pc.restartIce();
+        } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'closed') {
           this.updateStatus('disconnected');
         }
+      };
+
+      pc.onicecandidateerror = (ev: RTCPeerConnectionIceErrorEvent) => {
+        console.warn('[ICE] Candidate error:', ev.errorCode, ev.errorText, ev.url);
       };
 
       // Retrieve Offer SDP from Firestore and generate Answer SDP
