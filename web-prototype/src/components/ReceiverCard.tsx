@@ -136,6 +136,8 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
             </p>
             <input
               type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
               placeholder="e.g. 198275"
               maxLength={6}
               value={code}
