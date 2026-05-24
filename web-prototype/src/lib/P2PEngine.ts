@@ -78,6 +78,7 @@ function buildIceServers(): RTCIceServer[] {
       credential: 'openrelayproject',
     },
   ];
+}
 
 export class P2PEngine {
   private pc: RTCPeerConnection | null = null;
