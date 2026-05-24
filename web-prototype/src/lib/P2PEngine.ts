@@ -499,9 +499,7 @@ export class P2PEngine {
             this.dataChannel.send(JSON.stringify({ type: 'done' }));
           }
           this.releaseWakeLock();
-          if (this.onTransferComplete) {
-            this.onTransferComplete();
-          }
+          console.log('[WebRTC] Sender finished block streaming. Waiting for receiver done-ack...');
         }
       }
     };
@@ -817,17 +815,40 @@ export class P2PEngine {
               case 'done':
                 if (receivedMetadata && receivedChunks.length > 0) {
                   this.releaseWakeLock();
-                  const fileKey = `${receivedMetadata.name}_${receivedMetadata.size}`;
-                  chunkCache.clearChunks(fileKey).catch(console.warn);
+                  
+                  // Verify that the fully received byte size matches metadata exactly
+                  if (bytesReceived === receivedMetadata.size) {
+                    const fileKey = `${receivedMetadata.name}_${receivedMetadata.size}`;
+                    chunkCache.clearChunks(fileKey).catch(console.warn);
 
-                  // Reassemble the incoming file chunks into a single Blob
-                  const fileBlob = new Blob(receivedChunks, { type: receivedMetadata.type });
-                  const downloadUrl = URL.createObjectURL(fileBlob);
-                  if (this.onTransferComplete) {
-                    this.onTransferComplete(downloadUrl);
+                    // Reassemble the incoming file chunks into a single Blob
+                    const fileBlob = new Blob(receivedChunks, { type: receivedMetadata.type });
+                    const downloadUrl = URL.createObjectURL(fileBlob);
+
+                    // Acknowledge the receipt and successful file construction to the sender
+                    if (dc.readyState === 'open') {
+                      dc.send(JSON.stringify({ type: 'done-ack' }));
+                    }
+
+                    if (this.onTransferComplete) {
+                      this.onTransferComplete(downloadUrl);
+                    }
+                  } else {
+                    console.error(`[WebRTC] Expected ${receivedMetadata.size} bytes, but received ${bytesReceived} bytes.`);
+                    if (this.onError) {
+                      this.onError('File transfer was incomplete or corrupted.');
+                    }
                   }
+                  
                   // Clean up buffer
                   receivedChunks = [];
+                }
+                break;
+
+              case 'done-ack':
+                console.log('[WebRTC] Sender received done-ack verification from receiver.');
+                if (this.onTransferComplete) {
+                  this.onTransferComplete();
                 }
                 break;
             }
