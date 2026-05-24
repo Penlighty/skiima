@@ -1,21 +1,37 @@
 {
+  "id": "/",
+  "scope": "/",
   "short_name": "Skiima Share",
   "name": "Skiima Share - Secure P2P Sharing",
+  "description": "Secure, direct browser-to-browser P2P file sharing utilizing WebRTC data channels.",
+  "start_url": "/",
+  "background_color": "#0b0c10",
+  "theme_color": "#12131c",
+  "display": "standalone",
+  "orientation": "portrait",
+  "categories": [
+    "utilities",
+    "productivity"
+  ],
+  "prefer_related_applications": false,
   "icons": [
     {
       "src": "/favicon.svg",
       "type": "image/svg+xml",
-      "sizes": "any"
+      "sizes": "any",
+      "purpose": "any"
     },
     {
       "src": "/icon-192.png",
       "type": "image/png",
-      "sizes": "192x192"
+      "sizes": "192x192",
+      "purpose": "any"
     },
     {
       "src": "/icon-512.png",
       "type": "image/png",
-      "sizes": "512x512"
+      "sizes": "512x512",
+      "purpose": "any"
     },
     {
       "src": "/icon-512-maskable.png",
@@ -24,10 +40,46 @@
       "purpose": "maskable"
     }
   ],
-  "start_url": "/",
-  "background_color": "#0b0c10",
-  "theme_color": "#12131c",
-  "display": "standalone",
-  "orientation": "portrait",
-  "description": "Secure, direct browser-to-browser P2P file sharing utilizing WebRTC data channels."
+  "screenshots": [
+    {
+      "src": "/screenshot-desktop.png",
+      "sizes": "1920x1080",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "Skiima Share on Desktop"
+    },
+    {
+      "src": "/screenshot-mobile.png",
+      "sizes": "1080x1920",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Skiima Share on Mobile"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Send a File",
+      "short_name": "Send",
+      "url": "/?action=send",
+      "description": "Open the send tab to share files",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "View History",
+      "short_name": "History",
+      "url": "/?action=history",
+      "description": "Open sharing history",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    }
+  ]
 }
