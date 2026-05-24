@@ -28,36 +28,52 @@ export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected-p2p' |
 const CHUNK_SIZE = 64 * 1024; // 64KB chunks
 const BUFFER_THRESHOLD = 1024 * 1024; // 1MB buffer threshold for backpressure
 
-/** Shared ICE server list: multiple STUN + free TURN fallbacks for NAT traversal */
-const ICE_SERVERS: RTCIceServer[] = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun2.l.google.com:19302' },
-  { urls: 'stun:stun3.l.google.com:19302' },
-  { urls: 'stun:stun4.l.google.com:19302' },
-  // freestun.net — no-auth free TURN relay
-  {
-    urls: ['turn:freestun.net:3478', 'turns:freestun.net:5349'],
-    username: 'free',
-    credential: 'free'
-  },
-  // Metered Open Relay TURN (multiple ports for firewall resilience)
-  {
-    urls: 'turn:openrelay.metered.ca:80',
-    username: 'openrelayproject',
-    credential: 'openrelayproject'
-  },
-  {
-    urls: 'turn:openrelay.metered.ca:443',
-    username: 'openrelayproject',
-    credential: 'openrelayproject'
-  },
-  {
-    urls: 'turns:openrelay.metered.ca:443',
-    username: 'openrelayproject',
-    credential: 'openrelayproject'
+/**
+ * Builds the ICE server list at runtime.
+ * - If Metered.ca credentials are provided via env vars, uses the production
+ *   Metered relay servers (reliable, TCP/TLS on port 443 — works on any network).
+ * - Falls back to the openrelay demo servers as a last resort.
+ * - All UDP STUN entries are intentionally omitted when the network blocks UDP DNS.
+ */
+function buildIceServers(): RTCIceServer[] {
+  const meteredUser = import.meta.env.VITE_METERED_USERNAME;
+  const meteredCred = import.meta.env.VITE_METERED_CREDENTIAL;
+
+  if (meteredUser && meteredCred) {
+    // Metered.ca production TURN — TCP/TLS 443 always passes corporate firewalls
+    return [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      {
+        urls: [
+          'turn:a.relay.metered.ca:80',
+          'turn:a.relay.metered.ca:80?transport=tcp',
+          'turn:a.relay.metered.ca:443',
+          'turn:a.relay.metered.ca:443?transport=tcp',
+          'turns:a.relay.metered.ca:443',
+        ],
+        username: meteredUser,
+        credential: meteredCred,
+      },
+    ];
   }
-];
+
+  // Fallback: openrelay demo (free but unreliable — only TCP 443 entries kept)
+  console.warn('[ICE] No Metered credentials found. Using openrelay fallback. ' +
+    'Set VITE_METERED_USERNAME + VITE_METERED_CREDENTIAL in Vercel for reliable TURN.');
+  return [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    {
+      urls: [
+        'turns:openrelay.metered.ca:443',
+        'turn:openrelay.metered.ca:443?transport=tcp',
+      ],
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+  ];
+}
 
 export class P2PEngine {
   private pc: RTCPeerConnection | null = null;
@@ -96,7 +112,7 @@ export class P2PEngine {
     this.roomCode = roomCode;
 
     const peerOptions: RTCConfiguration = {
-      iceServers: ICE_SERVERS,
+      iceServers: buildIceServers(),
       iceTransportPolicy: 'all'
     };
 
@@ -199,7 +215,7 @@ export class P2PEngine {
     this.roomCode = roomCode;
 
     const peerOptions: RTCConfiguration = {
-      iceServers: ICE_SERVERS,
+      iceServers: buildIceServers(),
       iceTransportPolicy: 'all'
     };
 
