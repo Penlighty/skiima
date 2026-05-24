@@ -386,13 +386,28 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
             </div>
           )}
 
-          <button
-            type="submit"
-            className="btn-cyan"
-            disabled={connectionStatus === 'connecting' || code.length !== 6}
-          >
-            {connectionStatus === 'connecting' ? 'Connecting to Sender...' : 'Connect & Fetch File'} <ArrowRight size={18} />
-          </button>
+          {connectionStatus === 'connecting' ? (
+            <button
+              type="button"
+              onClick={() => {
+                engine.cleanup(true);
+                localStorage.removeItem('skiima_active_transfer_session');
+                setConnectionStatus('disconnected');
+                setErrorMsg('');
+              }}
+              className="btn-primary"
+            >
+              Cancel & Enter New Code
+            </button>
+          ) : (
+            <button
+              type="submit"
+              className="btn-cyan"
+              disabled={code.length !== 6}
+            >
+              Connect & Fetch File <ArrowRight size={18} />
+            </button>
+          )}
         </form>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1 }}>
