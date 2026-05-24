@@ -67,6 +67,30 @@ export class P2PEngine {
   private offset = 0;
   private currentFile: File | null = null;
   private readNextChunkFn: (() => void) | null = null;
+  private wakeLock: any = null;
+
+  private async acquireWakeLock(): Promise<void> {
+    try {
+      if ('wakeLock' in navigator) {
+        this.wakeLock = await (navigator as any).wakeLock.request('screen');
+        console.log('[WakeLock] Screen Wake Lock acquired.');
+      }
+    } catch (err: any) {
+      console.warn(`[WakeLock] Error acquiring screen wake lock: ${err.name}, ${err.message}`);
+    }
+  }
+
+  private releaseWakeLock(): void {
+    if (this.wakeLock) {
+      try {
+        this.wakeLock.release();
+        console.log('[WakeLock] Screen Wake Lock released.');
+      } catch (err: any) {
+        console.warn(`[WakeLock] Error releasing screen wake lock: ${err.message}`);
+      }
+      this.wakeLock = null;
+    }
+  }
 
   // Callbacks for UI updates
   public onStatusChange?: (status: ConnectionStatus) => void;
@@ -334,6 +358,7 @@ export class P2PEngine {
     this.isStopped = false;
     this.currentFile = file;
     this.offset = 0;
+    this.acquireWakeLock();
 
     const metadata: FileMetadata = {
       name: file.name,
@@ -360,6 +385,7 @@ export class P2PEngine {
     this.offset = startOffset;
     this.isPaused = false;
     this.isStopped = false;
+    this.acquireWakeLock();
 
     const fileReader = new FileReader();
     const totalSize = file.size;
@@ -435,6 +461,7 @@ export class P2PEngine {
           if (this.dataChannel && this.dataChannel.readyState === 'open') {
             this.dataChannel.send(JSON.stringify({ type: 'done' }));
           }
+          this.releaseWakeLock();
           if (this.onTransferComplete) {
             this.onTransferComplete();
           }
@@ -458,6 +485,7 @@ export class P2PEngine {
   public pauseTransfer(): void {
     if (this.isPaused || this.isStopped) return;
     this.isPaused = true;
+    this.releaseWakeLock();
     console.log('[WebRTC] Sender paused transfer');
     try {
       this.dataChannel?.send(JSON.stringify({ type: 'pause' }));
@@ -475,6 +503,7 @@ export class P2PEngine {
   public resumeTransfer(): void {
     if (!this.isPaused || this.isStopped) return;
     this.isPaused = false;
+    this.acquireWakeLock();
     console.log('[WebRTC] Sender resumed transfer');
     try {
       this.dataChannel?.send(JSON.stringify({ type: 'resume' }));
@@ -495,6 +524,7 @@ export class P2PEngine {
   public stopTransfer(): void {
     this.isStopped = true;
     this.isPaused = false;
+    this.releaseWakeLock();
     console.log('[WebRTC] Sender stopped transfer');
     try {
       this.dataChannel?.send(JSON.stringify({ type: 'stop' }));
@@ -670,6 +700,7 @@ export class P2PEngine {
                 {
                   const metadata = control.data as FileMetadata;
                   receivedMetadata = metadata;
+                  this.acquireWakeLock();
                   (async () => {
                     const fileKey = `${metadata.name}_${metadata.size}`;
                     const history = historyDb.getShareHistory();
@@ -720,22 +751,26 @@ export class P2PEngine {
 
               case 'pause':
                 console.log('[WebRTC] Receiver got pause notification');
+                this.releaseWakeLock();
                 if (this.onTransferPaused) this.onTransferPaused();
                 break;
 
               case 'resume':
                 console.log('[WebRTC] Receiver got resume notification');
+                this.acquireWakeLock();
                 if (this.onTransferResumed) this.onTransferResumed();
                 break;
 
               case 'stop':
                 console.log('[WebRTC] Receiver got stop notification');
+                this.releaseWakeLock();
                 if (this.onTransferStopped) this.onTransferStopped('Sender cancelled the transfer.');
                 this.cleanup();
                 break;
 
               case 'disconnect':
                 console.log('[WebRTC] Peer disconnected manually');
+                this.releaseWakeLock();
                 if (this.onError) {
                   this.onError('The other user has manually disconnected.');
                 }
@@ -744,6 +779,7 @@ export class P2PEngine {
 
               case 'done':
                 if (receivedMetadata && receivedChunks.length > 0) {
+                  this.releaseWakeLock();
                   const fileKey = `${receivedMetadata.name}_${receivedMetadata.size}`;
                   chunkCache.clearChunks(fileKey).catch(console.warn);
 
@@ -883,6 +919,7 @@ export class P2PEngine {
    * Disconnects and cleans up all active peer allocations
    */
   public cleanup(manual = false): void {
+    this.releaseWakeLock();
     if (manual && this.dataChannel && this.dataChannel.readyState === 'open') {
       try {
         this.dataChannel.send(JSON.stringify({ type: 'disconnect' }));
