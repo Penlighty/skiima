@@ -254,10 +254,18 @@ export const SenderCard: React.FC<SenderCardProps> = ({
     setTransferDone(false);
     setStats(null);
 
-    // Reuse existing room code, recovered code, or generate a new one
-    const recoveredCode = localStorage.getItem('skiima_recovered_room_code');
-    const codeToUse = roomCode || recoveredCode || Math.floor(100000 + Math.random() * 900000).toString();
+    // Reuse existing room code ONLY if we are actively connected or resuming a failed history item.
+    // In all other cases, generate a fresh random 6-digit room code to break stale retry traps.
+    const recoveredCode = localStorage.getItem('skiima_recovered_room_code') || '';
+    const isResuming = !!resumeHistoryItem;
+    const isKeepAlive = connectionStatus === 'connected-p2p' || connectionStatus === 'connected-turn';
+    const codeToUse = (isKeepAlive || isResuming) && (roomCode || recoveredCode)
+      ? (roomCode || recoveredCode)
+      : Math.floor(100000 + Math.random() * 900000).toString();
+
+    // Clear the recovered room code token now that it has been handled
     localStorage.removeItem('skiima_recovered_room_code');
+    setRoomCode(codeToUse);
 
     // Save active transfer session for resilience
     localStorage.setItem('skiima_active_transfer_session', JSON.stringify({

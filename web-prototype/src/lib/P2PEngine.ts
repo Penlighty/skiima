@@ -43,16 +43,30 @@ function buildIceServers(): RTCIceServer[] {
   const servers: RTCIceServer[] = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' }
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' }
   ];
 
   if (username && credential) {
+    // 1. Hostname-based TURN configuration (Standard path)
     servers.push({
       urls: [
-        `stun:${username}.metered.ca:80`,
-        `turn:${username}.metered.ca:80?transport=udp`,
-        `turn:${username}.metered.ca:443?transport=tcp`,
-        `turns:${username}.metered.ca:443?transport=tcp`
+        'stun:global.relay.metered.ca:80',
+        'turn:global.relay.metered.ca:80?transport=udp',
+        'turn:global.relay.metered.ca:443?transport=tcp',
+        'turns:global.relay.metered.ca:443?transport=tcp'
+      ],
+      username: username,
+      credential: credential
+    });
+
+    // 2. Raw IP-based TURN fallback (Bypasses local ISP or Wi-Fi DNS-level filtering for .ca domains!)
+    servers.push({
+      urls: [
+        'stun:172.233.120.119:80',
+        'turn:172.233.120.119:80?transport=udp',
+        'turn:172.233.120.119:443?transport=tcp',
+        'turns:172.233.120.119:443?transport=tcp'
       ],
       username: username,
       credential: credential
