@@ -287,6 +287,31 @@ export const SenderCard: React.FC<SenderCardProps> = ({
     }
   };
 
+  const handleSendAnother = () => {
+    setFile(null);
+    setStats(null);
+    setIsTransferring(false);
+    setTransferDone(false);
+    setErrorMsg('');
+    setIsPaused(false);
+    setShowStopConfirm(false);
+    
+    // Clear active session file metadata but keep roomCode
+    const activeSessionRaw = localStorage.getItem('skiima_active_transfer_session');
+    if (activeSessionRaw) {
+      try {
+        const session = JSON.parse(activeSessionRaw);
+        localStorage.setItem('skiima_active_transfer_session', JSON.stringify({
+          role: 'sender',
+          roomCode: session.roomCode,
+          fileMetadata: { name: '', size: 0, type: '' }
+        }));
+      } catch (e) {
+        console.warn(e);
+      }
+    }
+  };
+
   const handleReset = () => {
     engine.cleanup();
     setFile(null);
@@ -843,7 +868,7 @@ export const SenderCard: React.FC<SenderCardProps> = ({
                 <p style={{ fontSize: '0.85rem' }}>Your file was streamed successfully via direct P2P.</p>
               </div>
               <button
-                onClick={handleReset}
+                onClick={handleSendAnother}
                 className="btn-primary"
                 style={{ marginTop: '1rem', width: 'auto', paddingLeft: '2rem', paddingRight: '2rem' }}
               >

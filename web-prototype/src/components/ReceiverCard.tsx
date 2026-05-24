@@ -41,6 +41,9 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
     engine.onMetadataReceived = (metadata) => {
       setFileMetadata(metadata);
       setIsTransferring(true);
+      setTransferDone(false); // Reset completed transfer state for sequential file streams
+      setDownloadUrl(''); // Reset download URL
+      setStats(null); // Reset stats for the next file
       setErrorMsg('');
 
       // Save receiver session with complete file metadata
