@@ -334,32 +334,55 @@ function App() {
   const maxWeeklyActivityValue = Math.max(...weeklyActivityData, 1);
   const daysOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-  // Global Theme Selector Component
+  // Toggle the theme mode in a single cycling sequence: Light -> Dark -> System
+  const toggleTheme = () => {
+    setThemeMode((prev) => {
+      if (prev === 'light') return 'dark';
+      if (prev === 'dark') return 'system';
+      return 'light';
+    });
+  };
+
+  // Global Theme Selector Component (Single Cycling Toggle)
   const renderThemeSelector = () => {
+    const getThemeIcon = () => {
+      switch (themeMode) {
+        case 'light': return <Sun size={18} style={{ color: '#eab308' }} />;
+        case 'dark': return <Moon size={18} style={{ color: '#ff5b7f' }} />;
+        case 'system': return <Monitor size={18} style={{ color: '#8176f2' }} />;
+      }
+    };
+
+    const getThemeTitle = () => {
+      switch (themeMode) {
+        case 'light': return 'Theme: Light (Click to cycle)';
+        case 'dark': return 'Theme: Dark (Click to cycle)';
+        case 'system': return 'Theme: System Sync (Click to cycle)';
+      }
+    };
+
     return (
-      <div className="theme-selector">
-        <button
-          onClick={() => setThemeMode('light')}
-          className={`theme-selector-btn ${themeMode === 'light' ? 'active' : ''}`}
-          title="Light Appearance"
-        >
-          <Sun size={14} />
-        </button>
-        <button
-          onClick={() => setThemeMode('dark')}
-          className={`theme-selector-btn ${themeMode === 'dark' ? 'active' : ''}`}
-          title="Dark Appearance"
-        >
-          <Moon size={14} />
-        </button>
-        <button
-          onClick={() => setThemeMode('system')}
-          className={`theme-selector-btn ${themeMode === 'system' ? 'active' : ''}`}
-          title="System Sync"
-        >
-          <Monitor size={14} />
-        </button>
-      </div>
+      <button
+        onClick={toggleTheme}
+        className="theme-selector-btn active"
+        style={{
+          width: '38px',
+          height: '38px',
+          borderRadius: '50%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: 'var(--bg-input)',
+          border: '1px solid var(--border-input)',
+          cursor: 'pointer',
+          boxShadow: 'var(--shadow-tactile)',
+          transition: 'var(--transition-fast)',
+          padding: 0
+        }}
+        title={getThemeTitle()}
+      >
+        {getThemeIcon()}
+      </button>
     );
   };
 

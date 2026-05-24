@@ -38,6 +38,9 @@
   --bg-input: #f8fafc;
   --border-input: #e2e8f0;
 
+  --font-sans: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'Space Grotesk', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
   color-scheme: light;
 }
 
@@ -76,6 +79,9 @@
   --bg-grid-container: rgba(0, 0, 0, 0.25);
   --bg-input: rgba(0, 0, 0, 0.3);
   --border-input: rgba(255, 255, 255, 0.08);
+
+  --font-sans: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'Space Grotesk', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 
   color-scheme: dark;
 }
@@ -116,6 +122,9 @@
     --bg-grid-container: rgba(0, 0, 0, 0.25);
     --bg-input: rgba(0, 0, 0, 0.3);
     --border-input: rgba(255, 255, 255, 0.08);
+
+    --font-sans: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-mono: 'Space Grotesk', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 
     color-scheme: dark;
   }

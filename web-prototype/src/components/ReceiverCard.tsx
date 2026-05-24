@@ -198,7 +198,43 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
         </div>
       </div>
 
-      {!fileMetadata ? (
+      {connectionStatus === 'connected-turn' ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', flexGrow: 1, justifyContent: 'center' }}>
+          <div style={{
+            background: '#fef2f2',
+            border: '1px solid rgba(239, 68, 68, 0.25)',
+            borderRadius: '16px',
+            padding: '1.25rem',
+            color: 'var(--accent-red)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '0.75rem',
+            textAlign: 'left'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 700 }}>
+              <AlertTriangle size={18} /> File Sharing Blocked: Non-P2P Connection
+            </div>
+            <p style={{ color: '#991b1b', margin: 0, fontSize: '0.85rem', lineHeight: '1.5' }}>
+              Skiima detected that your connection is going through a global relay server (TURN) because direct P2P is blocked by carrier firewalls (CGNAT) or a VPN. **File sharing is blocked over relayed connections to prevent quota overages.**
+            </p>
+            <div style={{ background: '#ffffff', border: '1px solid #fee2e2', padding: '0.75rem', borderRadius: '10px', fontSize: '0.8rem', color: '#4a5568' }}>
+              <strong style={{ color: '#1a202c' }}>How to enable P2P transfer:</strong>
+              <ul style={{ margin: '0.35rem 0 0 1.25rem', padding: 0, display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                <li>Connect both devices to the <strong>same local Wi-Fi network</strong>.</li>
+                <li>Turn off cellular data hotspots.</li>
+                <li>Disable commercial/corporate VPNs on both ends.</li>
+              </ul>
+            </div>
+          </div>
+          <button
+            onClick={handleReset}
+            className="btn-primary"
+            style={{ marginTop: '0.5rem' }}
+          >
+            Reset and Try Again
+          </button>
+        </div>
+      ) : !fileMetadata ? (
         <form onSubmit={handleConnect} style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', flexGrow: 1, justifyContent: 'center' }}>
           <div>
             <p style={{ marginBottom: '0.75rem', fontSize: '0.95rem' }}>
@@ -271,36 +307,7 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
             </div>
           )}
 
-          {/* TURN Connection blocker */}
-          {connectionStatus === 'connected-turn' && !transferDone && (
-            <div style={{
-              background: '#fef2f2',
-              border: '1px solid rgba(239, 68, 68, 0.25)',
-              borderRadius: '16px',
-              padding: '1.25rem',
-              marginBottom: '1rem',
-              color: 'var(--accent-red)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '0.75rem',
-              textAlign: 'left'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 700 }}>
-                <AlertTriangle size={18} /> File Sharing Blocked: Non-P2P Connection
-              </div>
-              <p style={{ color: '#991b1b', margin: 0, fontSize: '0.85rem', lineHeight: '1.5' }}>
-                Skiima detected that your connection is going through a global relay server (TURN) because direct P2P is blocked by carrier firewalls (CGNAT) or a VPN. **File sharing is blocked over relayed connections to prevent quota overages.**
-              </p>
-              <div style={{ background: '#ffffff', border: '1px solid #fee2e2', padding: '0.75rem', borderRadius: '10px', fontSize: '0.8rem', color: '#4a5568' }}>
-                <strong style={{ color: '#1a202c' }}>How to enable P2P transfer:</strong>
-                <ul style={{ margin: '0.35rem 0 0 1.25rem', padding: 0, display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                  <li>Connect both devices to the <strong>same local Wi-Fi network</strong>.</li>
-                  <li>Turn off cellular data hotspots.</li>
-                  <li>Disable commercial/corporate VPNs on both ends.</li>
-                </ul>
-              </div>
-            </div>
-          )}
+
 
           {(isTransferring || stats) && !transferDone && (
             <div className="progress-container">
