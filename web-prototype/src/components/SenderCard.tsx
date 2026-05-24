@@ -84,7 +84,7 @@ export const SenderCard: React.FC<SenderCardProps> = ({
 
     engine.onStatusChange = (status) => {
       setConnectionStatus(status);
-      if (status === 'connected-p2p' || status === 'connected-turn') {
+      if (status === 'connected-p2p') { // Strictly only allow direct P2P!
         // Automatically start file streaming once receiver connects
         if (file && !isTransferring && !transferDone) {
           setIsTransferring(true);
@@ -125,7 +125,7 @@ export const SenderCard: React.FC<SenderCardProps> = ({
   // AND WebRTC connection becomes fully connected.
   useEffect(() => {
     if (
-      (connectionStatus === 'connected-p2p' || connectionStatus === 'connected-turn') &&
+      (connectionStatus === 'connected-p2p') && // Strictly require direct P2P!
       file &&
       !isTransferring &&
       !transferDone
@@ -394,27 +394,34 @@ export const SenderCard: React.FC<SenderCardProps> = ({
             </div>
           )}
 
-          {/* TURN Connection advisory warning */}
+          {/* TURN Connection advisory warning (Blocker) */}
           {connectionStatus === 'connected-turn' && !transferDone && (
             <div style={{
-              background: 'rgba(245, 158, 11, 0.05)',
-              border: '1px solid rgba(245, 158, 11, 0.15)',
+              background: 'rgba(239, 68, 68, 0.05)',
+              border: '1px solid rgba(239, 68, 68, 0.2)',
               borderRadius: '16px',
-              padding: '1rem',
+              padding: '1.25rem',
               marginBottom: '1rem',
-              color: '#f59e0b',
-              fontSize: '0.8rem',
-              lineHeight: '1.4',
+              color: 'var(--accent-red)',
               display: 'flex',
               flexDirection: 'column',
-              gap: '0.5rem'
+              gap: '0.75rem',
+              textAlign: 'left'
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontWeight: 600 }}>
-                <AlertTriangle size={16} /> Relayed (TURN) Connection Fallback
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 600 }}>
+                <AlertTriangle size={18} /> File Sharing Blocked: Non-P2P Connection
               </div>
-              <p style={{ color: '#fbbf24', margin: 0, fontSize: '0.78rem' }}>
-                Peers are blocked by strict cellular data NATs or VPN firewalls. Traffic is relayed via global servers (consuming relay quota). For maximum speeds and zero quota usage, connect both devices to local Wi-Fi or turn off corporate VPNs.
+              <p style={{ color: '#fca5a5', margin: 0, fontSize: '0.82rem', lineHeight: '1.5' }}>
+                Skiima detected that your connection is going through a global relay server (TURN) because direct P2P is blocked by carrier CGNAT firewalls or a commercial VPN. **File sharing is blocked over relayed connections to prevent quota overages.**
               </p>
+              <div style={{ background: 'rgba(0,0,0,0.2)', padding: '0.75rem', borderRadius: '10px', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                <strong style={{ color: 'var(--text-primary)' }}>How to enable transfer:</strong>
+                <ul style={{ margin: '0.35rem 0 0 1rem', padding: 0, display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                  <li>Connect both devices to the <strong>same local Wi-Fi network</strong>.</li>
+                  <li>Turn off mobile cellular data (LTE/5G) hotspots.</li>
+                  <li>Disable commercial/corporate VPNs on both ends.</li>
+                </ul>
+              </div>
             </div>
           )}
 

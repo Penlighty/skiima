@@ -512,3 +512,46 @@ footer p {
   font-size: 0.85rem;
   color: var(--text-muted);
 }
+
+/* Mobile Responsiveness & Layout Optimizations */
+@media (max-width: 520px) {
+  h1 {
+    font-size: 2.2rem !important;
+  }
+  
+  .glass-panel {
+    padding: 1.25rem !important;
+    border-radius: 18px !important;
+  }
+
+  .dropzone {
+    padding: 2rem 1rem !important;
+  }
+
+  .code-text {
+    font-size: 1.4rem !important;
+    letter-spacing: 0.05em !important;
+  }
+
+  .file-card {
+    padding: 0.85rem !important;
+    margin-bottom: 1rem !important;
+  }
+
+  .stats-grid {
+    grid-template-columns: 1fr !important; /* Stack stats vertically on narrow phones */
+    gap: 0.5rem !important;
+  }
+
+  .nav-tab {
+    padding: 0.6rem 1rem !important;
+    font-size: 0.85rem !important;
+  }
+}
+
+/* Wide screen centering and balance */
+@media (min-width: 1024px) {
+  main {
+    max-width: 700px !important;
+  }
+}
