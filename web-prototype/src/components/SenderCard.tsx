@@ -254,9 +254,9 @@ export const SenderCard: React.FC<SenderCardProps> = ({
     setTransferDone(false);
     setStats(null);
 
-    // Reuse recovered room code if present, otherwise generate a new one
+    // Reuse existing room code, recovered code, or generate a new one
     const recoveredCode = localStorage.getItem('skiima_recovered_room_code');
-    const codeToUse = recoveredCode || Math.floor(100000 + Math.random() * 900000).toString();
+    const codeToUse = roomCode || recoveredCode || Math.floor(100000 + Math.random() * 900000).toString();
     localStorage.removeItem('skiima_recovered_room_code');
 
     // Save active transfer session for resilience
@@ -270,7 +270,10 @@ export const SenderCard: React.FC<SenderCardProps> = ({
       }
     }));
 
-    engine.initialize(codeToUse);
+    // Only initialize connection if not already connected/connecting
+    if (connectionStatus === 'disconnected') {
+      engine.initialize(codeToUse);
+    }
   };
 
   const handleCopyCode = async () => {
