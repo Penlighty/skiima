@@ -142,14 +142,13 @@ export class P2PEngine {
       // Listen for connection state changes (Sender)
       pc.onconnectionstatechange = () => {
         console.log('[WebRTC] Sender connection state:', pc.connectionState);
-        if (pc.connectionState === 'connected') {
-          this.detectIceCandidateType(pc);
-        } else if (pc.connectionState === 'failed') {
+        if (pc.connectionState === 'failed') {
           console.warn('[WebRTC] Sender connection failed, attempting ICE restart...');
           pc.restartIce();
         } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'closed') {
           this.updateStatus('disconnected');
         }
+        // NOTE: 'connected' status is set from dc.onopen to guarantee DataChannel is ready
       };
 
       pc.onicecandidateerror = (ev: RTCPeerConnectionIceErrorEvent) => {
@@ -247,14 +246,13 @@ export class P2PEngine {
       // Listen for connection state changes (Receiver)
       pc.onconnectionstatechange = () => {
         console.log('[WebRTC] Receiver connection state:', pc.connectionState);
-        if (pc.connectionState === 'connected') {
-          this.detectIceCandidateType(pc);
-        } else if (pc.connectionState === 'failed') {
+        if (pc.connectionState === 'failed') {
           console.warn('[WebRTC] Receiver connection failed, attempting ICE restart...');
           pc.restartIce();
         } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'closed') {
           this.updateStatus('disconnected');
         }
+        // NOTE: 'connected' status is set from dc.onopen to guarantee DataChannel is ready
       };
 
       pc.onicecandidateerror = (ev: RTCPeerConnectionIceErrorEvent) => {
@@ -458,7 +456,13 @@ export class P2PEngine {
 
     dc.onopen = () => {
       console.log('[WebRTC] RTCDataChannel opened successfully');
-      
+
+      // Detect relay type and update status NOW — DataChannel is guaranteed open
+      // This triggers onStatusChange → SenderCard.sendFile() safely
+      if (this.pc) {
+        this.detectIceCandidateType(this.pc);
+      }
+
       // Clean up the signaling Firestore room now that we are directly connected
       if (this.roomCode) {
         this.cleanupRoomDoc(this.roomCode);
@@ -468,7 +472,7 @@ export class P2PEngine {
     dc.onclose = () => {
       console.log('[WebRTC] RTCDataChannel closed');
       this.updateStatus('disconnected');
-      this.cleanup();
+      // Don't call full cleanup() here — let the connection state handler manage it
     };
 
     dc.onerror = (err) => {
