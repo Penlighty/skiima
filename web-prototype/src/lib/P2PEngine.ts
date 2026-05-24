@@ -25,8 +25,8 @@ export interface TransferStats {
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected-p2p' | 'connected-turn';
 
-const CHUNK_SIZE = 64 * 1024; // 64KB chunks
-const BUFFER_THRESHOLD = 1024 * 1024; // 1MB buffer threshold for backpressure
+const CHUNK_SIZE = 16 * 1024; // 16KB chunks (optimal for WebRTC MTU size)
+const BUFFER_THRESHOLD = 256 * 1024; // 256KB buffer threshold to prevent memory overflows
 
 /**
  * Builds the ICE server list at runtime.
@@ -432,23 +432,26 @@ export class P2PEngine {
    */
   private waitBufferLow(dataChannel: RTCDataChannel): Promise<void> {
     return new Promise((resolve) => {
+      if (dataChannel.bufferedAmount < BUFFER_THRESHOLD) {
+        resolve();
+        return;
+      }
+
       const checkBuffer = () => {
         if (dataChannel.bufferedAmount < BUFFER_THRESHOLD) {
           resolve();
         } else {
-          setTimeout(checkBuffer, 20);
+          setTimeout(checkBuffer, 10);
         }
       };
       
-      if ('onbufferedamountlow' in dataChannel) {
-        const onLow = () => {
-          dataChannel.removeEventListener('bufferedamountlow', onLow);
-          resolve();
-        };
-        dataChannel.addEventListener('bufferedamountlow', onLow);
-      } else {
-        checkBuffer();
-      }
+      const onLow = () => {
+        dataChannel.removeEventListener('bufferedamountlow', onLow);
+        resolve();
+      };
+      
+      dataChannel.addEventListener('bufferedamountlow', onLow);
+      setTimeout(checkBuffer, 100); // Robust fallback timeout
     });
   }
 
@@ -459,11 +462,15 @@ export class P2PEngine {
     this.dataChannel = dc;
     dc.binaryType = 'arraybuffer';
 
+    try {
+      dc.bufferedAmountLowThreshold = 65536; // 64KB threshold
+    } catch (e) {
+      console.warn('Failed to set bufferedAmountLowThreshold:', e);
+    }
+
     dc.onopen = () => {
       console.log('[WebRTC] RTCDataChannel opened successfully');
 
-      // Detect relay type and update status NOW — DataChannel is guaranteed open
-      // This triggers onStatusChange → SenderCard.sendFile() safely
       if (this.pc) {
         this.detectIceCandidateType(this.pc);
       }
@@ -602,49 +609,70 @@ export class P2PEngine {
       const statsMap = new Map<string, RTCStats>(stats as unknown as Map<string, RTCStats>);
       let isRelay = false;
 
-      // Method 1: Transport-based selected pair (standard spec)
-      let activeCandidatePairId = '';
+      // Find the active candidate pair used for transport
+      let activePair: any = null;
+
+      // 1. Try finding by 'selected' or 'nominated' properties on candidate-pair
       stats.forEach((report) => {
-        if (report.type === 'transport' && (report as any).selectedCandidatePairId) {
-          activeCandidatePairId = (report as any).selectedCandidatePairId;
+        if (report.type === 'candidate-pair') {
+          const pair = report as any;
+          if (pair.selected === true || pair.nominated === true) {
+            activePair = pair;
+          }
         }
       });
 
-      if (activeCandidatePairId) {
-        const candidatePair = statsMap.get(activeCandidatePairId) as any;
-        if (candidatePair) {
-          const localId = candidatePair.localCandidateId;
-          const remoteId = candidatePair.remoteCandidateId;
-          const localCandidate = localId ? statsMap.get(localId) as any : null;
-          const remoteCandidate = remoteId ? statsMap.get(remoteId) as any : null;
-          if (
-            (localCandidate && localCandidate.candidateType === 'relay') ||
-            (remoteCandidate && remoteCandidate.candidateType === 'relay')
-          ) {
-            isRelay = true;
+      // 2. Fallback to Transport-based selected pair ID (standard spec)
+      if (!activePair) {
+        let activeCandidatePairId = '';
+        stats.forEach((report) => {
+          if (report.type === 'transport' && (report as any).selectedCandidatePairId) {
+            activeCandidatePairId = (report as any).selectedCandidatePairId;
           }
+        });
+        if (activeCandidatePairId) {
+          activePair = statsMap.get(activeCandidatePairId);
         }
       }
 
-      // Method 2: Fallback scan all candidate-pairs (covers iOS Safari & mobile browsers)
-      if (!isRelay) {
+      // 3. Fallback scan succeeded pairs, but prioritize direct types over relay candidates
+      if (!activePair) {
+        let succeededPairs: any[] = [];
         stats.forEach((report) => {
-          if (
-            report.type === 'candidate-pair' &&
-            ((report as any).nominated || (report as any).selected || (report as any).state === 'succeeded')
-          ) {
-            const localId = (report as any).localCandidateId;
-            const remoteId = (report as any).remoteCandidateId;
-            const localCandidate = localId ? statsMap.get(localId) as any : null;
-            const remoteCandidate = remoteId ? statsMap.get(remoteId) as any : null;
-            if (
-              (localCandidate && localCandidate.candidateType === 'relay') ||
-              (remoteCandidate && remoteCandidate.candidateType === 'relay')
-            ) {
-              isRelay = true;
-            }
+          if (report.type === 'candidate-pair' && (report as any).state === 'succeeded') {
+            succeededPairs.push(report);
           }
         });
+        if (succeededPairs.length > 0) {
+          const directPair = succeededPairs.find((pair) => {
+            const localCandidate = pair.localCandidateId ? statsMap.get(pair.localCandidateId) as any : null;
+            const remoteCandidate = pair.remoteCandidateId ? statsMap.get(pair.remoteCandidateId) as any : null;
+            const isLocalRelay = localCandidate && localCandidate.candidateType === 'relay';
+            const isRemoteRelay = remoteCandidate && remoteCandidate.candidateType === 'relay';
+            return !isLocalRelay && !isRemoteRelay;
+          });
+          activePair = directPair || succeededPairs[0];
+        }
+      }
+
+      if (activePair) {
+        const localId = activePair.localCandidateId;
+        const remoteId = activePair.remoteCandidateId;
+        const localCandidate = localId ? statsMap.get(localId) as any : null;
+        const remoteCandidate = remoteId ? statsMap.get(remoteId) as any : null;
+
+        console.log('[WebRTC] Active Candidate Pair Local:', localCandidate?.candidateType, 'Remote:', remoteCandidate?.candidateType);
+
+        if (
+          (localCandidate && localCandidate.candidateType === 'relay') ||
+          (remoteCandidate && remoteCandidate.candidateType === 'relay')
+        ) {
+          isRelay = true;
+        }
+      } else {
+        // Default to direct P2P if active pair stats aren't loaded yet to prevent false blockers
+        console.log('[WebRTC] No active candidate pair found in stats yet, defaulting to P2P.');
+        isRelay = false;
       }
 
       console.log('[WebRTC Connection Type]', isRelay ? 'TURN RELAY' : 'DIRECT P2P');
