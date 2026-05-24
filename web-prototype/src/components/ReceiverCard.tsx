@@ -159,6 +159,17 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
     }
   }, [connectionStatus, transferDone, engine]);
 
+  // C. Aggressive unmount cleanup
+  useEffect(() => {
+    return () => {
+      if (engine.roomCode && !transferDone) {
+        console.log('[Resilience] ReceiverCard unmounted during unestablished session. Cleaning up connection...');
+        engine.cleanup(true);
+        localStorage.removeItem('skiima_active_transfer_session');
+      }
+    };
+  }, [engine, transferDone]);
+
   const handleConnect = (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');

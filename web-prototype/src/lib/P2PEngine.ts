@@ -159,7 +159,23 @@ export class P2PEngine {
   public onTransferResumed?: () => void;
   public onTransferStopped?: (reason: string) => void;
 
-  constructor() {}
+  private currentChunkSize = CHUNK_SIZE;
+
+  constructor() {
+    if (typeof window !== 'undefined' && 'addEventListener' in window) {
+      document.addEventListener('visibilitychange', this.handleVisibilityChange);
+    }
+  }
+
+  private handleVisibilityChange = (): void => {
+    if (document.visibilityState === 'visible' && !this.wakeLock) {
+      const isActive = this.pc && (this.pc.connectionState === 'connected' || this.pc.connectionState === 'connecting');
+      if (isActive && (this.currentFile || this.roomCode)) {
+        console.log('[WakeLock] Tab returned to foreground. Re-acquiring Screen Wake Lock...');
+        this.acquireWakeLock();
+      }
+    }
+  };
 
   /**
    * Initializes the native WebRTC peer connection (Sender Role)
@@ -445,14 +461,31 @@ export class P2PEngine {
       if (e.target?.result instanceof ArrayBuffer) {
         const blockBuffer = e.target.result;
         let blockOffset = 0;
+        this.currentChunkSize = CHUNK_SIZE; // Reset to optimal size for this stream
 
         while (blockOffset < blockBuffer.byteLength && !this.isStopped && !this.isPaused) {
-          const chunkLength = Math.min(CHUNK_SIZE, blockBuffer.byteLength - blockOffset);
+          const chunkLength = Math.min(this.currentChunkSize, blockBuffer.byteLength - blockOffset);
           const chunk = blockBuffer.slice(blockOffset, blockOffset + chunkLength);
 
           // Apply backpressure using RTCDataChannel's bufferedAmount
           if (this.dataChannel && this.dataChannel.bufferedAmount > BUFFER_THRESHOLD) {
+            const startWait = Date.now();
             await this.waitBufferLow(this.dataChannel);
+            const waitTime = Date.now() - startWait;
+
+            // Congestion Control: Saturated link detected (halve chunk size)
+            if (waitTime > 100) {
+              if (this.currentChunkSize > 16 * 1024) {
+                this.currentChunkSize = Math.max(16 * 1024, this.currentChunkSize / 2);
+                console.log(`[Congestion Control] Saturated link detected (clear time: ${waitTime}ms). Halving chunk size to: ${this.currentChunkSize / 1024}KB`);
+              }
+            } else if (waitTime < 20) {
+              // High throughput detected (scale chunk size back up)
+              if (this.currentChunkSize < CHUNK_SIZE) {
+                this.currentChunkSize = Math.min(CHUNK_SIZE, this.currentChunkSize * 2);
+                console.log(`[Congestion Control] High throughput detected (clear time: ${waitTime}ms). Scaling chunk size up to: ${this.currentChunkSize / 1024}KB`);
+              }
+            }
           }
 
           if (this.isStopped || this.isPaused) return;

@@ -8,6 +8,7 @@ import { presence } from './lib/presence';
 import type { TransferRequest } from './lib/presence';
 import { historyDb } from './lib/historyDb';
 import type { ContactItem, HistoryItem } from './lib/historyDb';
+import { chunkCache } from './lib/chunkCache';
 
 type ViewType = 'dashboard' | 'send' | 'receive' | 'profile' | 'history_full';
 type ThemeMode = 'light' | 'dark' | 'system';
@@ -67,6 +68,9 @@ function App() {
 
   // 1.5. Resilient Session Recovery & URL Param Detection on Mount
   useEffect(() => {
+    // Trigger background garbage collection of stale/abandoned IndexedDB file chunks
+    chunkCache.garbageCollect().catch((err) => console.warn('[GC] Error running background garbage collection:', err));
+
     // A. Parse URL ?room=xxxxxx parameter
     const params = new URLSearchParams(window.location.search);
     const roomParam = params.get('room');

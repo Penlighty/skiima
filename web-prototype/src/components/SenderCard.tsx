@@ -208,6 +208,16 @@ export const SenderCard: React.FC<SenderCardProps> = ({
     }
   }, [connectionStatus, transferDone, showStopConfirm, roomCode, engine]);
 
+  // Aggressive unmount cleanup to delete orphaned Firestore room docs
+  useEffect(() => {
+    return () => {
+      if (engine.roomCode && !transferDone) {
+        console.log('[Resilience] SenderCard unmounted during pending/unestablished session. Cleaning up Firestore room...');
+        engine.cleanup(true);
+      }
+    };
+  }, [engine, transferDone]);
+
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
