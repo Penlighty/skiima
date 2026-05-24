@@ -33,6 +33,7 @@ function App() {
   const [outboundTargetName, setOutboundTargetName] = useState<string>('');
   const [outboundCancelFn, setOutboundCancelFn] = useState<(() => void) | null>(null);
   const [quickSendFile, setQuickSendFile] = useState<File | null>(null);
+  const [resumeHistoryItem, setResumeHistoryItem] = useState<HistoryItem | null>(null);
 
   // Contacts and recent history states
   const [contacts, setContacts] = useState<ContactItem[]>([]);
@@ -296,14 +297,7 @@ function App() {
     }
   };
 
-  const getFormattedDate = () => {
-    const d = new Date();
-    return d.toLocaleDateString('en-US', {
-      weekday: 'long',
-      day: 'numeric',
-      month: 'short'
-    });
-  };
+
 
   const statsCalculated = useMemo(() => {
     const history = historyDb.getShareHistory().filter(item => item.status === 'success');
@@ -406,63 +400,63 @@ function App() {
         flexDirection: 'column',
         gap: '1.5rem'
       }}>
+        {/* Unified Responsive Header */}
+        <div style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          padding: '0.25rem 0.5rem',
+          marginTop: '0.5rem',
+          borderBottom: '1px solid var(--border-muted)',
+          paddingBottom: '1rem'
+        }}>
+          <div 
+            onClick={() => handleViewChange('dashboard')}
+            style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}
+            title="Go to Dashboard"
+          >
+            <img src="/favicon.svg" alt="Skiima Logo" className="header-logo" style={{ width: '42px', height: '40px' }} />
+            <h1 style={{ fontSize: '1.75rem', fontWeight: 700, margin: 0, letterSpacing: '-0.03em', color: 'var(--text-primary)', display: 'flex', alignItems: 'center' }}>
+              Skiima<span style={{ color: 'var(--accent-cyan)', fontWeight: 600 }}>Share</span>
+            </h1>
+          </div>
+
+          {/* Theme toggler and Profile Avatar */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            {renderThemeSelector()}
+
+            {profile && (
+              <button
+                onClick={() => handleViewChange('profile')}
+                style={{
+                  width: '40px',
+                  height: '40px',
+                  borderRadius: '50%',
+                  background: 'linear-gradient(135deg, #8176f2 0%, #5649e7 100%)',
+                  color: '#ffffff',
+                  border: '3px solid var(--bg-dark)',
+                  boxShadow: 'var(--shadow-tactile)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontWeight: 700,
+                  fontSize: '1rem',
+                  cursor: 'pointer',
+                  outline: 'none',
+                  transition: 'var(--transition-fast)'
+                }}
+                className="btn-icon-copy"
+                title="View Profile Settings"
+              >
+                {profile.peerName.charAt(0).toUpperCase()}
+              </button>
+            )}
+          </div>
+        </div>
 
         {/* ---------------- 1. DASHBOARD VIEW ---------------- */}
         {activeView === 'dashboard' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-            
-            {/* Aesthetic Header with Logo and Name Wordmark */}
-            <div style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              padding: '0.25rem 0.5rem',
-              marginTop: '0.5rem'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                <img src="/favicon.svg" alt="Skiima Logo" style={{ width: '38px', height: '36px' }} />
-                <div>
-                  <h1 style={{ fontSize: '1.65rem', fontWeight: 700, margin: 0, letterSpacing: '-0.03em', color: 'var(--text-primary)', display: 'flex', alignItems: 'center' }}>
-                    Skiima<span style={{ color: 'var(--accent-cyan)', fontWeight: 600 }}>Share</span>
-                  </h1>
-                  <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 500 }}>
-                    {getFormattedDate()}
-                  </p>
-                </div>
-              </div>
-
-              {/* Theme toggler and Profile Avatar */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                {renderThemeSelector()}
-
-                {profile && (
-                  <button
-                    onClick={() => handleViewChange('profile')}
-                    style={{
-                      width: '40px',
-                      height: '40px',
-                      borderRadius: '50%',
-                      background: 'linear-gradient(135deg, #8176f2 0%, #5649e7 100%)',
-                      color: '#ffffff',
-                      border: '3px solid var(--bg-dark)',
-                      boxShadow: 'var(--shadow-tactile)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontWeight: 700,
-                      fontSize: '1rem',
-                      cursor: 'pointer',
-                      outline: 'none',
-                      transition: 'var(--transition-fast)'
-                    }}
-                    className="btn-icon-copy"
-                    title="View Profile Settings"
-                  >
-                    {profile.peerName.charAt(0).toUpperCase()}
-                  </button>
-                )}
-              </div>
-            </div>
 
             {/* Quick Secure Badge */}
             <div style={{
@@ -740,17 +734,7 @@ function App() {
                     return (
                       <div
                         key={item.id}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          padding: '0.75rem 1rem',
-                          background: 'var(--bg-input)',
-                          border: '1px solid var(--border-input)',
-                          borderRadius: '16px',
-                          gap: '0.85rem',
-                          justifyContent: 'space-between',
-                          boxShadow: 'var(--shadow-tactile)'
-                        }}
+                        className="history-item-card"
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', minWidth: 0, flexGrow: 1 }}>
                           <div style={{
@@ -789,10 +773,9 @@ function App() {
                           </div>
                         </div>
 
-                        <div style={{ textAlign: 'right', fontSize: '0.7rem', color: 'var(--text-muted)', flexShrink: 0 }}>
+                        <div className="right-block" style={{ textAlign: 'right', fontSize: '0.7rem', color: 'var(--text-muted)', flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.2rem' }}>
                           <div>{formatDate(item.transferDate)}</div>
                           <div style={{
-                            marginTop: '0.15rem',
                             fontWeight: 700,
                             color: item.status === 'success' ? '#10b981' : '#ef4444',
                             textTransform: 'uppercase',
@@ -801,6 +784,26 @@ function App() {
                           }}>
                             {item.status === 'success' ? 'Success' : 'Failed'}
                           </div>
+                          {item.status === 'failed' && (
+                            <button
+                              onClick={() => {
+                                setResumeHistoryItem(item);
+                                setActiveView(item.peerRole === 'sender' ? 'send' : 'receive');
+                              }}
+                              className="btn-cyan"
+                              style={{
+                                padding: '0.25rem 0.5rem',
+                                fontSize: '0.65rem',
+                                borderRadius: '8px',
+                                width: 'auto',
+                                boxShadow: 'none',
+                                marginTop: '0.25rem',
+                                cursor: 'pointer'
+                              }}
+                            >
+                              Restart
+                            </button>
+                          )}
                         </div>
                       </div>
                     );
@@ -848,7 +851,12 @@ function App() {
             setConnectionStatus={setConnectionStatus}
             initialFile={quickSendFile}
             onClearInitialFile={() => setQuickSendFile(null)}
-            onBack={() => handleViewChange('dashboard')}
+            onBack={() => {
+              setResumeHistoryItem(null);
+              handleViewChange('dashboard');
+            }}
+            resumeHistoryItem={resumeHistoryItem}
+            onClearResumeHistoryItem={() => setResumeHistoryItem(null)}
           />
         )}
 
@@ -858,7 +866,12 @@ function App() {
             engine={engine}
             connectionStatus={connectionStatus}
             setConnectionStatus={setConnectionStatus}
-            onBack={() => handleViewChange('dashboard')}
+            onBack={() => {
+              setResumeHistoryItem(null);
+              handleViewChange('dashboard');
+            }}
+            resumeHistoryItem={resumeHistoryItem}
+            onClearResumeHistoryItem={() => setResumeHistoryItem(null)}
           />
         )}
 
@@ -931,17 +944,7 @@ function App() {
                   return (
                     <div
                       key={item.id}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        padding: '0.85rem 1rem',
-                        background: 'var(--bg-input)',
-                        border: '1px solid var(--border-input)',
-                        borderRadius: '16px',
-                        gap: '0.85rem',
-                        justifyContent: 'space-between',
-                        boxShadow: 'var(--shadow-tactile)'
-                      }}
+                      className="history-item-card"
                     >
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', minWidth: 0, flexGrow: 1 }}>
                         <div style={{
@@ -980,10 +983,9 @@ function App() {
                         </div>
                       </div>
 
-                      <div style={{ textAlign: 'right', fontSize: '0.7rem', color: 'var(--text-muted)', flexShrink: 0 }}>
+                      <div className="right-block" style={{ textAlign: 'right', fontSize: '0.7rem', color: 'var(--text-muted)', flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.2rem' }}>
                         <div>{formatDate(item.transferDate)}</div>
                         <div style={{
-                          marginTop: '0.15rem',
                           fontWeight: 700,
                           color: item.status === 'success' ? '#10b981' : '#ef4444',
                           textTransform: 'uppercase',
@@ -992,6 +994,26 @@ function App() {
                         }}>
                           {item.status === 'success' ? 'Success' : 'Failed'}
                         </div>
+                        {item.status === 'failed' && (
+                          <button
+                            onClick={() => {
+                              setResumeHistoryItem(item);
+                              setActiveView(item.peerRole === 'sender' ? 'send' : 'receive');
+                            }}
+                            className="btn-cyan"
+                            style={{
+                              padding: '0.25rem 0.5rem',
+                              fontSize: '0.65rem',
+                              borderRadius: '8px',
+                              width: 'auto',
+                              boxShadow: 'none',
+                              marginTop: '0.25rem',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            Restart
+                          </button>
+                        )}
                       </div>
                     </div>
                   );

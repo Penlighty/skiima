@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { UploadCloud, File, Copy, Check, Zap, RotateCcw, AlertTriangle, Radio, X } from 'lucide-react';
+import { UploadCloud, File, Copy, Check, Zap, RotateCcw, AlertTriangle, Radio, X, Pause, Play, Square, MessageCircle } from 'lucide-react';
 import { P2PEngine } from '../lib/P2PEngine';
 import type { TransferStats, ConnectionStatus } from '../lib/P2PEngine';
 import { historyDb } from '../lib/historyDb';
+import type { HistoryItem } from '../lib/historyDb';
 import { ChunkVisualizer } from './ChunkVisualizer';
 
 interface SenderCardProps {
@@ -12,6 +13,8 @@ interface SenderCardProps {
   initialFile?: File | null;
   onClearInitialFile?: () => void;
   onBack?: () => void;
+  resumeHistoryItem?: HistoryItem | null;
+  onClearResumeHistoryItem?: () => void;
 }
 
 export const SenderCard: React.FC<SenderCardProps> = ({
@@ -20,13 +23,17 @@ export const SenderCard: React.FC<SenderCardProps> = ({
   setConnectionStatus,
   initialFile,
   onClearInitialFile,
-  onBack
+  onBack,
+  resumeHistoryItem,
+  onClearResumeHistoryItem
 }) => {
   const [file, setFile] = useState<File | null>(null);
   const [roomCode, setRoomCode] = useState<string>('');
   const [copied, setCopied] = useState<boolean>(false);
   const [stats, setStats] = useState<TransferStats | null>(null);
   const [isTransferring, setIsTransferring] = useState<boolean>(false);
+  const [isPaused, setIsPaused] = useState<boolean>(false);
+  const [showStopConfirm, setShowStopConfirm] = useState<boolean>(false);
   const [transferDone, setTransferDone] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [showChunks, setShowChunks] = useState<boolean>(false);
@@ -56,6 +63,7 @@ export const SenderCard: React.FC<SenderCardProps> = ({
     engine.onTransferComplete = () => {
       setTransferDone(true);
       setIsTransferring(false);
+      setIsPaused(false);
       setStats((prev) => prev ? { ...prev, progress: 100 } : null);
       if (file) {
         historyDb.addShareHistoryItem({
@@ -72,6 +80,7 @@ export const SenderCard: React.FC<SenderCardProps> = ({
     engine.onError = (err) => {
       setErrorMsg(err);
       setIsTransferring(false);
+      setIsPaused(false);
       if (file) {
         historyDb.addShareHistoryItem({
           fileName: file.name,
@@ -95,6 +104,20 @@ export const SenderCard: React.FC<SenderCardProps> = ({
           });
         }
       }
+    };
+
+    engine.onTransferPaused = () => {
+      setIsPaused(true);
+    };
+
+    engine.onTransferResumed = () => {
+      setIsPaused(false);
+    };
+
+    engine.onTransferStopped = (reason) => {
+      setIsTransferring(false);
+      setIsPaused(false);
+      setErrorMsg(`Transfer stopped: ${reason}`);
     };
 
     return () => {};
@@ -153,13 +176,27 @@ export const SenderCard: React.FC<SenderCardProps> = ({
     setIsDragActive(false);
 
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      setupFileAndCode(e.dataTransfer.files[0]);
+      const selectedFile = e.dataTransfer.files[0];
+      if (resumeHistoryItem) {
+        if (selectedFile.name !== resumeHistoryItem.fileName || selectedFile.size !== resumeHistoryItem.fileSize) {
+          setErrorMsg(`Invalid file. Please select the original file: "${resumeHistoryItem.fileName}" (${formatBytes(resumeHistoryItem.fileSize)})`);
+          return;
+        }
+      }
+      setupFileAndCode(selectedFile);
     }
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
-      setupFileAndCode(e.target.files[0]);
+      const selectedFile = e.target.files[0];
+      if (resumeHistoryItem) {
+        if (selectedFile.name !== resumeHistoryItem.fileName || selectedFile.size !== resumeHistoryItem.fileSize) {
+          setErrorMsg(`Invalid file. Please select the original file: "${resumeHistoryItem.fileName}" (${formatBytes(resumeHistoryItem.fileSize)})`);
+          return;
+        }
+      }
+      setupFileAndCode(selectedFile);
     }
   };
 
@@ -193,6 +230,11 @@ export const SenderCard: React.FC<SenderCardProps> = ({
     setTransferDone(false);
     setErrorMsg('');
     setConnectionStatus('disconnected');
+    setIsPaused(false);
+    setShowStopConfirm(false);
+    if (onClearResumeHistoryItem) {
+      onClearResumeHistoryItem();
+    }
   };
 
   const formatBytes = (bytes: number, decimals = 2) => {
@@ -275,48 +317,96 @@ export const SenderCard: React.FC<SenderCardProps> = ({
       {/* 1. Initial State (No file, No room code) */}
       {!file && !roomCode && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', flexGrow: 1, justifyContent: 'center' }}>
-          <div
-            className={`dropzone ${isDragActive ? 'active' : ''}`}
-            onDragEnter={handleDrag}
-            onDragOver={handleDrag}
-            onDragLeave={handleDrag}
-            onDrop={handleDrop}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleFileSelect}
-              style={{ display: 'none' }}
-            />
-            <div className="dropzone-icon">
-              <UploadCloud size={40} />
+          {resumeHistoryItem ? (
+            <div
+              className={`dropzone ${isDragActive ? 'active' : ''}`}
+              onDragEnter={handleDrag}
+              onDragOver={handleDrag}
+              onDragLeave={handleDrag}
+              onDrop={handleDrop}
+              onClick={() => fileInputRef.current?.click()}
+              style={{ borderColor: 'var(--accent-purple)', background: 'rgba(129, 118, 242, 0.02)' }}
+            >
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleFileSelect}
+                style={{ display: 'none' }}
+              />
+              <div className="dropzone-icon" style={{ color: 'var(--accent-purple)' }}>
+                <UploadCloud size={40} />
+              </div>
+              <div>
+                <p style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.25rem' }}>
+                  Resuming: "{resumeHistoryItem.fileName}"
+                </p>
+                <p style={{ fontSize: '0.875rem' }}>
+                  Please select or drop the original file to resume transferring from where it left off ({formatBytes(resumeHistoryItem.fileSize)}).
+                </p>
+              </div>
             </div>
-            <div>
-              <p style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.25rem' }}>
-                Drag & Drop your file here
-              </p>
-              <p style={{ fontSize: '0.875rem' }}>or click to browse local files</p>
+          ) : (
+            <div
+              className={`dropzone ${isDragActive ? 'active' : ''}`}
+              onDragEnter={handleDrag}
+              onDragOver={handleDrag}
+              onDragLeave={handleDrag}
+              onDrop={handleDrop}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleFileSelect}
+                style={{ display: 'none' }}
+              />
+              <div className="dropzone-icon">
+                <UploadCloud size={40} />
+              </div>
+              <div>
+                <p style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.25rem' }}>
+                  Drag & Drop your file here
+                </p>
+                <p style={{ fontSize: '0.875rem' }}>or click to browse local files</p>
+              </div>
             </div>
-          </div>
+          )}
           
-          <button
-            type="button"
-            onClick={handleConnectFirst}
-            className="btn-primary"
-            style={{
-              background: '#f8fafc',
-              border: '1px solid #cbd5e1',
-              color: 'var(--text-primary)',
-              fontSize: '0.9rem',
-              padding: '0.75rem',
-              width: '100%',
-              boxShadow: 'none',
-              borderRadius: '12px'
-            }}
-          >
-            Connect Device First (without file)
-          </button>
+          {errorMsg && (
+            <div style={{
+              background: '#fef2f2',
+              border: '1px solid rgba(239, 68, 68, 0.2)',
+              borderRadius: '12px',
+              padding: '0.85rem',
+              color: 'var(--accent-red)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem'
+            }}>
+              <AlertTriangle size={18} />
+              <p style={{ color: '#991b1b', fontSize: '0.85rem', fontWeight: 500 }}>{errorMsg}</p>
+            </div>
+          )}
+          
+          {!resumeHistoryItem && (
+            <button
+              type="button"
+              onClick={handleConnectFirst}
+              className="btn-primary"
+              style={{
+                background: '#f8fafc',
+                border: '1px solid #cbd5e1',
+                color: 'var(--text-primary)',
+                fontSize: '0.9rem',
+                padding: '0.75rem',
+                width: '100%',
+                boxShadow: 'none',
+                borderRadius: '12px'
+              }}
+            >
+              Connect Device First (without file)
+            </button>
+          )}
         </div>
       )}
 
@@ -328,11 +418,23 @@ export const SenderCard: React.FC<SenderCardProps> = ({
               <p style={{ marginBottom: '0.5rem', fontSize: '0.95rem' }}>
                 Waiting for recipient to connect. Share this key:
               </p>
-              <div className="code-box">
-                <span className="code-text">{roomCode}</span>
-                <button onClick={handleCopyCode} className="btn-icon-copy">
+              <div className="code-box" style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center', alignItems: 'center' }}>
+                <span className="code-text" style={{ flexGrow: 0, paddingRight: '0.5rem' }}>{roomCode}</span>
+                <button onClick={handleCopyCode} className="btn-icon-copy" title="Copy Code" style={{ flexShrink: 0 }}>
                   {copied ? <Check size={20} style={{ color: 'var(--accent-green)' }} /> : <Copy size={20} />}
                 </button>
+                <a
+                  href={`https://api.whatsapp.com/send?text=${encodeURIComponent(
+                    `Hey! Connect with me on Skiima Share using this code: *${roomCode}*. Open ${window.location.origin} to start the direct P2P transfer.`
+                  )}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn-icon-copy"
+                  title="Share via WhatsApp"
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', flexShrink: 0 }}
+                >
+                  <MessageCircle size={20} />
+                </a>
               </div>
               <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '1.5rem' }}>
                 Or select a file now to be ready for streaming:
@@ -354,8 +456,8 @@ export const SenderCard: React.FC<SenderCardProps> = ({
           ) : connectionStatus === 'connected-turn' ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               <div style={{
-                background: '#fef2f2',
-                border: '1px solid rgba(239, 68, 68, 0.25)',
+                background: 'rgba(239, 68, 68, 0.05)',
+                border: '1px solid rgba(239, 68, 68, 0.2)',
                 borderRadius: '16px',
                 padding: '1.25rem',
                 color: 'var(--accent-red)',
@@ -367,17 +469,24 @@ export const SenderCard: React.FC<SenderCardProps> = ({
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 700 }}>
                   <AlertTriangle size={18} /> File Sharing Blocked: Non-P2P Connection
                 </div>
-                <p style={{ color: '#991b1b', margin: 0, fontSize: '0.85rem', lineHeight: '1.5' }}>
-                  Skiima detected that your connection is going through a global relay server (TURN) because direct P2P is blocked by carrier firewalls (CGNAT) or a VPN. **File sharing is blocked over relayed connections to prevent quota overages.**
+                <p style={{ color: 'var(--text-secondary)', margin: 0, fontSize: '0.85rem', lineHeight: '1.4' }}>
+                  Skiima blocked this transfer because it's using a relayed connection (TURN). Direct P2P connection is required for absolute privacy and high-speed sharing.
                 </p>
-                <div style={{ background: '#ffffff', border: '1px solid #fee2e2', padding: '0.75rem', borderRadius: '10px', fontSize: '0.8rem', color: '#4a5568' }}>
-                  <strong style={{ color: '#1a202c' }}>How to enable P2P transfer:</strong>
-                  <ul style={{ margin: '0.35rem 0 0 1.25rem', padding: 0, display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                    <li>Connect both devices to the <strong>same local Wi-Fi network</strong>.</li>
-                    <li>Turn off cellular data hotspots.</li>
-                    <li>Disable commercial/corporate VPNs on both ends.</li>
-                  </ul>
-                </div>
+                <details className="troubleshoot-dropdown">
+                  <summary>How to Fix & Unblock Direct P2P</summary>
+                  <div style={{ padding: '0.75rem 0 0 0', fontSize: '0.8rem', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                    <p style={{ margin: 0, lineHeight: '1.4' }}>
+                      Direct browser-to-browser (P2P) transfers require an unblocked UDP route. Devices do not need to be on the same local network, but symmetric NATs, cellular hot-spots, guest-isolated Wi-Fi, or corporate VPNs can restrict direct routing.
+                    </p>
+                    <strong style={{ color: 'var(--text-primary)' }}>Resolution Steps:</strong>
+                    <ul style={{ margin: '0 0 0 1.25rem', padding: 0, display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                      <li>Disable commercial or corporate VPNs on both devices.</li>
+                      <li>If using cellular 3G/4G/5G mobile hotspots, try switching to standard Wi-Fi.</li>
+                      <li>Ensure the router's AP Isolation (guest Wi-Fi isolation) is disabled.</li>
+                      <li>Try connecting via different networks to establish a direct path.</li>
+                    </ul>
+                  </div>
+                </details>
               </div>
               <button
                 onClick={handleReset}
@@ -443,11 +552,23 @@ export const SenderCard: React.FC<SenderCardProps> = ({
                 Waiting for recipient. Share this 6-digit key:
               </p>
               {roomCode ? (
-                <div className="code-box">
-                  <span className="code-text">{roomCode}</span>
-                  <button onClick={handleCopyCode} className="btn-icon-copy">
+                <div className="code-box" style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center', alignItems: 'center' }}>
+                  <span className="code-text" style={{ flexGrow: 0, paddingRight: '0.5rem' }}>{roomCode}</span>
+                  <button onClick={handleCopyCode} className="btn-icon-copy" title="Copy Code" style={{ flexShrink: 0 }}>
                     {copied ? <Check size={20} style={{ color: 'var(--accent-green)' }} /> : <Copy size={20} />}
                   </button>
+                  <a
+                    href={`https://api.whatsapp.com/send?text=${encodeURIComponent(
+                      `Hey! Connect with me on Skiima Share using this code: *${roomCode}*. Open ${window.location.origin} to start the direct P2P transfer.`
+                    )}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="btn-icon-copy"
+                    title="Share via WhatsApp"
+                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', flexShrink: 0 }}
+                  >
+                    <MessageCircle size={20} />
+                  </a>
                 </div>
               ) : (
                 <div style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', padding: '1rem' }}>
@@ -477,8 +598,8 @@ export const SenderCard: React.FC<SenderCardProps> = ({
           {/* TURN Connection blocker */}
           {connectionStatus === 'connected-turn' && !transferDone && (
             <div style={{
-              background: '#fef2f2',
-              border: '1px solid rgba(239, 68, 68, 0.25)',
+              background: 'rgba(239, 68, 68, 0.05)',
+              border: '1px solid rgba(239, 68, 68, 0.2)',
               borderRadius: '16px',
               padding: '1.25rem',
               marginBottom: '1rem',
@@ -491,17 +612,24 @@ export const SenderCard: React.FC<SenderCardProps> = ({
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 700 }}>
                 <AlertTriangle size={18} /> File Sharing Blocked: Non-P2P Connection
               </div>
-              <p style={{ color: '#991b1b', margin: 0, fontSize: '0.85rem', lineHeight: '1.5' }}>
-                Skiima detected that your connection is going through a global relay server (TURN) because direct P2P is blocked by carrier firewalls (CGNAT) or a VPN. **File sharing is blocked over relayed connections to prevent quota overages.**
+              <p style={{ color: 'var(--text-secondary)', margin: 0, fontSize: '0.85rem', lineHeight: '1.4' }}>
+                Skiima blocked this transfer because it's using a relayed connection (TURN). Direct P2P connection is required for absolute privacy and high-speed sharing.
               </p>
-              <div style={{ background: '#ffffff', border: '1px solid #fee2e2', padding: '0.75rem', borderRadius: '10px', fontSize: '0.8rem', color: '#4a5568', marginBottom: '0.5rem' }}>
-                <strong style={{ color: '#1a202c' }}>How to enable P2P transfer:</strong>
-                <ul style={{ margin: '0.35rem 0 0 1.25rem', padding: 0, display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                  <li>Connect both devices to the <strong>same local Wi-Fi network</strong>.</li>
-                  <li>Turn off cellular data hotspots.</li>
-                  <li>Disable commercial/corporate VPNs on both ends.</li>
-                </ul>
-              </div>
+              <details className="troubleshoot-dropdown" style={{ marginBottom: '0.5rem' }}>
+                <summary>How to Fix & Unblock Direct P2P</summary>
+                <div style={{ padding: '0.75rem 0 0 0', fontSize: '0.8rem', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  <p style={{ margin: 0, lineHeight: '1.4' }}>
+                    Direct browser-to-browser (P2P) transfers require an unblocked UDP route. Devices do not need to be on the same local network, but symmetric NATs, cellular hot-spots, guest-isolated Wi-Fi, or corporate VPNs can restrict direct routing.
+                  </p>
+                  <strong style={{ color: 'var(--text-primary)' }}>Resolution Steps:</strong>
+                  <ul style={{ margin: '0 0 0 1.25rem', padding: 0, display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                    <li>Disable commercial or corporate VPNs on both devices.</li>
+                    <li>If using cellular 3G/4G/5G mobile hotspots, try switching to standard Wi-Fi.</li>
+                    <li>Ensure the router's AP Isolation (guest Wi-Fi isolation) is disabled.</li>
+                    <li>Try connecting via different networks to establish a direct path.</li>
+                  </ul>
+                </div>
+              </details>
               <button
                 onClick={handleReset}
                 className="btn-primary"
@@ -515,12 +643,12 @@ export const SenderCard: React.FC<SenderCardProps> = ({
           {(isTransferring || stats) && !transferDone && (
             <div className="progress-container">
               <div className="progress-header">
-                <span>Sending File...</span>
+                <span>{isPaused ? 'Transfer Paused' : 'Sending File...'}</span>
                 <span>{stats ? Math.round(stats.progress) : 0}%</span>
               </div>
               <div className="progress-track">
                 <div
-                  className="progress-bar purple"
+                  className={`progress-bar purple ${isPaused ? 'paused' : ''}`}
                   style={{ width: `${stats ? stats.progress : 0}%` }}
                 ></div>
               </div>
@@ -529,14 +657,61 @@ export const SenderCard: React.FC<SenderCardProps> = ({
                 <div className="stats-grid">
                   <div className="stat-item">
                     <span className="stat-label">Transfer Speed</span>
-                    <span className="stat-value">{formatSpeed(stats.speed)}</span>
+                    <span className="stat-value">{isPaused ? '0 Bytes/s' : formatSpeed(stats.speed)}</span>
                   </div>
                   <div className="stat-item">
                     <span className="stat-label">Time Remaining</span>
-                    <span className="stat-value">{stats.timeRemaining}s</span>
+                    <span className="stat-value">{isPaused ? '—' : `${stats.timeRemaining}s`}</span>
                   </div>
                 </div>
               )}
+
+              {/* Pause / Resume / Stop Actions */}
+              <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1.25rem', width: '100%' }}>
+                {isPaused ? (
+                  <button
+                    type="button"
+                    onClick={() => engine.resumeTransfer()}
+                    className="btn-cyan"
+                    style={{ flexGrow: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', padding: '0.65rem 0.5rem', fontSize: '0.9rem', borderRadius: '12px' }}
+                  >
+                    <Play size={16} /> Resume
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => engine.pauseTransfer()}
+                    className="btn-primary"
+                    style={{ flexGrow: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', padding: '0.65rem 0.5rem', fontSize: '0.9rem', borderRadius: '12px', background: '#f8fafc', border: '1px solid #cbd5e1', color: 'var(--text-primary)', boxShadow: 'none' }}
+                  >
+                    <Pause size={16} /> Pause
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    engine.pauseTransfer();
+                    setShowStopConfirm(true);
+                  }}
+                  className="btn-primary"
+                  style={{
+                    flexGrow: 1,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '0.4rem',
+                    padding: '0.65rem 0.5rem',
+                    fontSize: '0.9rem',
+                    borderRadius: '12px',
+                    background: 'rgba(239, 68, 68, 0.08)',
+                    border: '1px solid rgba(239, 68, 68, 0.25)',
+                    color: 'var(--accent-red)',
+                    boxShadow: 'none'
+                  }}
+                >
+                  <Square size={14} /> Stop
+                </button>
+              </div>
 
               <button
                 type="button"
@@ -558,7 +733,7 @@ export const SenderCard: React.FC<SenderCardProps> = ({
               </button>
 
               {showChunks && stats && (
-                <ChunkVisualizer progress={stats.progress} isTransferring={isTransferring} />
+                <ChunkVisualizer progress={stats.progress} isTransferring={isTransferring && !isPaused} />
               )}
             </div>
           )}
@@ -590,6 +765,114 @@ export const SenderCard: React.FC<SenderCardProps> = ({
               </button>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Custom absolute confirmation modal for Stop action */}
+      {showStopConfirm && (
+        <div style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(15, 23, 42, 0.75)',
+          backdropFilter: 'blur(8px)',
+          borderRadius: '24px',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '2rem',
+          zIndex: 100,
+          textAlign: 'center'
+        }}>
+          <div style={{
+            background: 'var(--bg-dark)',
+            border: '1px solid var(--border-input)',
+            borderRadius: '20px',
+            padding: '1.75rem 1.25rem',
+            maxWidth: '300px',
+            boxShadow: 'var(--shadow-premium)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '1rem'
+          }}>
+            <div style={{
+              background: 'rgba(239, 68, 68, 0.1)',
+              color: 'var(--accent-red)',
+              width: '44px',
+              height: '44px',
+              borderRadius: '50%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              alignSelf: 'center'
+            }}>
+              <AlertTriangle size={22} />
+            </div>
+            
+            <div>
+              <h4 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-primary)', margin: '0 0 0.4rem 0' }}>
+                Stop Transfer?
+              </h4>
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: 0, lineHeight: '1.4' }}>
+                Are you sure you want to stop the transfer? You can pause instead to keep your progress.
+              </p>
+            </div>
+            
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+              <button
+                onClick={() => {
+                  setShowStopConfirm(false);
+                }}
+                className="btn-cyan"
+                style={{ width: '100%', padding: '0.55rem', fontSize: '0.85rem', borderRadius: '10px' }}
+              >
+                Pause Instead
+              </button>
+              
+              <button
+                onClick={() => {
+                  setShowStopConfirm(false);
+                  engine.stopTransfer();
+                }}
+                className="btn-primary"
+                style={{
+                  width: '100%',
+                  padding: '0.55rem',
+                  fontSize: '0.85rem',
+                  borderRadius: '10px',
+                  background: 'none',
+                  border: '1px solid var(--accent-red)',
+                  color: 'var(--accent-red)',
+                  boxShadow: 'none'
+                }}
+              >
+                Stop (Destructive)
+              </button>
+              
+              <button
+                onClick={() => {
+                  setShowStopConfirm(false);
+                  engine.resumeTransfer();
+                }}
+                className="btn-primary"
+                style={{
+                  width: '100%',
+                  padding: '0.55rem',
+                  fontSize: '0.85rem',
+                  borderRadius: '10px',
+                  background: 'none',
+                  border: '1px solid var(--border-input)',
+                  color: 'var(--text-secondary)',
+                  boxShadow: 'none'
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -9,6 +9,8 @@ import {
   getDoc,
   deleteDoc
 } from 'firebase/firestore';
+import { historyDb } from './historyDb';
+import { chunkCache } from './chunkCache';
 
 export interface FileMetadata {
   name: string;
@@ -93,6 +95,13 @@ export class P2PEngine {
   public pairedPeerId: string = 'unknown';
   public pairedPeerName: string = 'Anonymous Peer';
 
+  // Active file transfer state
+  public isPaused = false;
+  public isStopped = false;
+  private offset = 0;
+  private currentFile: File | null = null;
+  private readNextChunkFn: (() => void) | null = null;
+
   // Callbacks for UI updates
   public onStatusChange?: (status: ConnectionStatus) => void;
   public onPeerIdReady?: (id: string) => void;
@@ -101,6 +110,11 @@ export class P2PEngine {
   public onTransferComplete?: (downloadUrl?: string) => void;
   public onError?: (error: string) => void;
   public onPeerHandshake?: (peerId: string, peerName: string) => void;
+
+  // Pause / Resume / Stop Callbacks
+  public onTransferPaused?: () => void;
+  public onTransferResumed?: () => void;
+  public onTransferStopped?: (reason: string) => void;
 
   constructor() {}
 
@@ -346,30 +360,56 @@ export class P2PEngine {
       throw new Error('No active peer connection');
     }
 
+    this.isPaused = false;
+    this.isStopped = false;
+    this.currentFile = file;
+    this.offset = 0;
+
     const metadata: FileMetadata = {
       name: file.name,
       size: file.size,
       type: file.type || 'application/octet-stream',
     };
 
-    // 1. Send file metadata as JSON string
+    console.log('[WebRTC] Initiating transfer handshake, sending metadata...');
+    // 1. Send file metadata as JSON string. The streaming loop will start
+    // once the receiver replies with 'request-offset'.
     this.dataChannel.send(JSON.stringify({ type: 'metadata', data: metadata }));
+  }
 
-    // 2. Start chunked file transmission
+  /**
+   * Starts chunked file streaming from a specific byte offset
+   */
+  public startChunkStreaming(startOffset: number): void {
+    const file = this.currentFile;
+    if (!file || !this.dataChannel || this.dataChannel.readyState !== 'open') {
+      console.warn('[WebRTC] Cannot start chunk streaming: state invalid.');
+      return;
+    }
+
+    this.offset = startOffset;
+    this.isPaused = false;
+    this.isStopped = false;
+
     const fileReader = new FileReader();
-    let offset = 0;
     const totalSize = file.size;
-    let chunkIndex = 0;
+    let chunkIndex = Math.floor(startOffset / CHUNK_SIZE);
     
     let startTime = Date.now();
     let lastStatsTime = Date.now();
+    let bytesSentInSession = 0;
 
     const readNextChunk = () => {
-      const slice = file.slice(offset, offset + CHUNK_SIZE);
+      if (this.isPaused || this.isStopped) return;
+      const slice = file.slice(this.offset, this.offset + CHUNK_SIZE);
       fileReader.readAsArrayBuffer(slice);
     };
 
+    this.readNextChunkFn = readNextChunk;
+
     fileReader.onload = async (e) => {
+      if (this.isStopped || this.isPaused) return;
+
       if (e.target?.result instanceof ArrayBuffer) {
         const buffer = e.target.result;
 
@@ -378,34 +418,39 @@ export class P2PEngine {
           await this.waitBufferLow(this.dataChannel);
         }
 
+        if (this.isStopped || this.isPaused) return;
+
         // Send the raw binary chunk directly
         if (this.dataChannel && this.dataChannel.readyState === 'open') {
           this.dataChannel.send(buffer);
 
-          offset += buffer.byteLength;
+          this.offset += buffer.byteLength;
+          bytesSentInSession += buffer.byteLength;
           chunkIndex++;
 
           // Real-time speed metrics calculation
           const now = Date.now();
-          if (now - lastStatsTime >= 200 || offset === totalSize) {
-            const timePassed = (now - startTime) / 1000;
-            const currentSpeed = offset / timePassed; // bytes/sec
-            const remainingBytes = totalSize - offset;
+          if (now - lastStatsTime >= 200 || this.offset === totalSize) {
+            const timePassed = (now - startTime) / 1000 || 0.001;
+            const currentSpeed = bytesSentInSession / timePassed; // bytes/sec
+            const remainingBytes = totalSize - this.offset;
             const timeRemaining = remainingBytes / (currentSpeed || 1);
 
             if (this.onProgress) {
               this.onProgress({
-                progress: Math.min((offset / totalSize) * 100, 100),
+                progress: Math.min((this.offset / totalSize) * 100, 100),
                 speed: currentSpeed,
-                bytesTransferred: offset,
+                bytesTransferred: this.offset,
                 timeRemaining: Math.max(0, Math.round(timeRemaining)),
               });
             }
             lastStatsTime = now;
           }
 
-          if (offset < totalSize) {
-            readNextChunk();
+          if (this.offset < totalSize) {
+            if (!this.isPaused && !this.isStopped) {
+              readNextChunk();
+            }
           } else {
             // Signal completed transfer as JSON string
             this.dataChannel.send(JSON.stringify({ type: 'done' }));
@@ -425,6 +470,61 @@ export class P2PEngine {
 
     // Initiate first chunk read
     readNextChunk();
+  }
+
+  /**
+   * Pauses the active file transfer
+   */
+  public pauseTransfer(): void {
+    if (this.isPaused || this.isStopped) return;
+    this.isPaused = true;
+    console.log('[WebRTC] Sender paused transfer');
+    try {
+      this.dataChannel?.send(JSON.stringify({ type: 'pause' }));
+    } catch (e) {
+      console.warn('Failed to send pause control:', e);
+    }
+    if (this.onTransferPaused) {
+      this.onTransferPaused();
+    }
+  }
+
+  /**
+   * Resumes the active file transfer
+   */
+  public resumeTransfer(): void {
+    if (!this.isPaused || this.isStopped) return;
+    this.isPaused = false;
+    console.log('[WebRTC] Sender resumed transfer');
+    try {
+      this.dataChannel?.send(JSON.stringify({ type: 'resume' }));
+    } catch (e) {
+      console.warn('Failed to send resume control:', e);
+    }
+    if (this.onTransferResumed) {
+      this.onTransferResumed();
+    }
+    if (this.readNextChunkFn) {
+      this.readNextChunkFn();
+    }
+  }
+
+  /**
+   * Stops the active file transfer completely
+   */
+  public stopTransfer(): void {
+    this.isStopped = true;
+    this.isPaused = false;
+    console.log('[WebRTC] Sender stopped transfer');
+    try {
+      this.dataChannel?.send(JSON.stringify({ type: 'stop' }));
+    } catch (e) {
+      console.warn('Failed to send stop control:', e);
+    }
+    if (this.onTransferStopped) {
+      this.onTransferStopped('Transfer was cancelled.');
+    }
+    this.cleanup();
   }
 
   /**
@@ -490,14 +590,38 @@ export class P2PEngine {
       }
     };
 
+    const logFailedTransfer = () => {
+      if (receivedMetadata && bytesReceived > 0 && bytesReceived < receivedMetadata.size) {
+        historyDb.addShareHistoryItem({
+          fileName: receivedMetadata.name,
+          fileSize: receivedMetadata.size,
+          peerRole: 'receiver',
+          peerId: this.pairedPeerId,
+          peerName: this.pairedPeerName,
+          status: 'failed'
+        });
+      } else if (this.currentFile && this.offset > 0 && this.offset < this.currentFile.size) {
+        historyDb.addShareHistoryItem({
+          fileName: this.currentFile.name,
+          fileSize: this.currentFile.size,
+          peerRole: 'sender',
+          peerId: this.pairedPeerId,
+          peerName: this.pairedPeerName,
+          status: 'failed'
+        });
+      }
+    };
+
     dc.onclose = () => {
       console.log('[WebRTC] RTCDataChannel closed');
+      logFailedTransfer();
       this.updateStatus('disconnected');
       // Don't call full cleanup() here — let the connection state handler manage it
     };
 
     dc.onerror = (err) => {
       console.error('[WebRTC] RTCDataChannel error:', err);
+      logFailedTransfer();
       if (this.onError) {
         this.onError('P2P connection experienced an engine failure.');
       }
@@ -520,9 +644,16 @@ export class P2PEngine {
           receivedChunks.push(payload);
           bytesReceived += payload.byteLength;
 
+          // Asynchronously cache chunk in local IndexedDB
+          const fileKey = `${receivedMetadata.name}_${receivedMetadata.size}`;
+          const chunkIndex = Math.floor((bytesReceived - payload.byteLength) / CHUNK_SIZE);
+          chunkCache.putChunk(fileKey, chunkIndex, payload).catch((e) => {
+            console.warn('Failed to cache chunk in IndexedDB:', e);
+          });
+
           const now = Date.now();
           if (now - lastStatsTime >= 200 || bytesReceived === receivedMetadata.size) {
-            const timePassed = (now - startTime) / 1000;
+            const timePassed = (now - startTime) / 1000 || 0.001;
             const currentSpeed = bytesReceived / timePassed;
             const remainingBytes = receivedMetadata.size - bytesReceived;
             const timeRemaining = remainingBytes / (currentSpeed || 1);
@@ -556,18 +687,78 @@ export class P2PEngine {
                 break;
 
               case 'metadata':
-                receivedMetadata = control.data as FileMetadata;
-                receivedChunks = [];
-                bytesReceived = 0;
-                startTime = Date.now();
-                lastStatsTime = Date.now();
-                if (this.onMetadataReceived) {
-                  this.onMetadataReceived(receivedMetadata);
+                {
+                  const metadata = control.data as FileMetadata;
+                  receivedMetadata = metadata;
+                  (async () => {
+                    const fileKey = `${metadata.name}_${metadata.size}`;
+                    const history = historyDb.getShareHistory();
+                    const failedItem = history.find(
+                      (item) =>
+                        item.status === 'failed' &&
+                        item.fileName === metadata.name &&
+                        item.fileSize === metadata.size &&
+                        item.peerRole === 'receiver'
+                    );
+
+                    if (failedItem) {
+                      try {
+                        const chunkCount = Math.ceil(metadata.size / CHUNK_SIZE);
+                        const loadedChunks = await chunkCache.getChunks(fileKey, chunkCount);
+                        receivedChunks = loadedChunks;
+                        bytesReceived = loadedChunks.reduce((acc, c) => acc + c.byteLength, 0);
+                        console.log(`[WebRTC Resume] Loaded ${loadedChunks.length} chunks. Resuming from offset ${bytesReceived}`);
+                      } catch (e) {
+                        console.warn('Failed to restore chunks from cache:', e);
+                        receivedChunks = [];
+                        bytesReceived = 0;
+                      }
+                    } else {
+                      await chunkCache.clearChunks(fileKey);
+                      receivedChunks = [];
+                      bytesReceived = 0;
+                    }
+
+                    startTime = Date.now();
+                    lastStatsTime = Date.now();
+                    
+                    if (this.onMetadataReceived) {
+                      this.onMetadataReceived(metadata);
+                    }
+                    
+                    // Request starting offset from sender
+                    dc.send(JSON.stringify({ type: 'request-offset', offset: bytesReceived }));
+                  })();
                 }
+                break;
+
+              case 'request-offset':
+                // Sender-side offset agreement
+                console.log(`[WebRTC] Receiver requested offset: ${control.offset}. Starting stream...`);
+                this.startChunkStreaming(control.offset);
+                break;
+
+              case 'pause':
+                console.log('[WebRTC] Receiver got pause notification');
+                if (this.onTransferPaused) this.onTransferPaused();
+                break;
+
+              case 'resume':
+                console.log('[WebRTC] Receiver got resume notification');
+                if (this.onTransferResumed) this.onTransferResumed();
+                break;
+
+              case 'stop':
+                console.log('[WebRTC] Receiver got stop notification');
+                if (this.onTransferStopped) this.onTransferStopped('Sender cancelled the transfer.');
+                this.cleanup();
                 break;
 
               case 'done':
                 if (receivedMetadata && receivedChunks.length > 0) {
+                  const fileKey = `${receivedMetadata.name}_${receivedMetadata.size}`;
+                  chunkCache.clearChunks(fileKey).catch(console.warn);
+
                   // Reassemble the incoming file chunks into a single Blob
                   const fileBlob = new Blob(receivedChunks, { type: receivedMetadata.type });
                   const downloadUrl = URL.createObjectURL(fileBlob);

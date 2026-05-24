@@ -3,6 +3,7 @@ import { DownloadCloud, File, ArrowRight, RotateCcw, AlertTriangle, Radio, Downl
 import { P2PEngine } from '../lib/P2PEngine';
 import type { TransferStats, ConnectionStatus, FileMetadata } from '../lib/P2PEngine';
 import { historyDb } from '../lib/historyDb';
+import type { HistoryItem } from '../lib/historyDb';
 import { ChunkVisualizer } from './ChunkVisualizer';
 
 interface ReceiverCardProps {
@@ -10,18 +11,22 @@ interface ReceiverCardProps {
   connectionStatus: ConnectionStatus;
   setConnectionStatus: (status: ConnectionStatus) => void;
   onBack?: () => void;
+  resumeHistoryItem?: HistoryItem | null;
+  onClearResumeHistoryItem?: () => void;
 }
 
 export const ReceiverCard: React.FC<ReceiverCardProps> = ({
   engine,
   connectionStatus,
   setConnectionStatus,
-  onBack
+  onBack,
+  onClearResumeHistoryItem
 }) => {
   const [code, setCode] = useState<string>('');
   const [fileMetadata, setFileMetadata] = useState<FileMetadata | null>(null);
   const [stats, setStats] = useState<TransferStats | null>(null);
   const [isTransferring, setIsTransferring] = useState<boolean>(false);
+  const [isPaused, setIsPaused] = useState<boolean>(false);
   const [transferDone, setTransferDone] = useState<boolean>(false);
   const [downloadUrl, setDownloadUrl] = useState<string>('');
   const [errorMsg, setErrorMsg] = useState<string>('');
@@ -45,6 +50,7 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
       }
       setTransferDone(true);
       setIsTransferring(false);
+      setIsPaused(false);
       setStats((prev) => prev ? { ...prev, progress: 100 } : null);
       if (fileMetadata) {
         historyDb.addShareHistoryItem({
@@ -61,6 +67,7 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
     engine.onError = (err) => {
       setErrorMsg(err);
       setIsTransferring(false);
+      setIsPaused(false);
       if (fileMetadata) {
         historyDb.addShareHistoryItem({
           fileName: fileMetadata.name,
@@ -75,6 +82,20 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
 
     engine.onStatusChange = (status) => {
       setConnectionStatus(status);
+    };
+
+    engine.onTransferPaused = () => {
+      setIsPaused(true);
+    };
+
+    engine.onTransferResumed = () => {
+      setIsPaused(false);
+    };
+
+    engine.onTransferStopped = (reason) => {
+      setIsTransferring(false);
+      setIsPaused(false);
+      setErrorMsg(`Transfer stopped: ${reason}`);
     };
 
     return () => {};
@@ -104,10 +125,14 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
     setFileMetadata(null);
     setStats(null);
     setIsTransferring(false);
+    setIsPaused(false);
     setTransferDone(false);
     setDownloadUrl('');
     setErrorMsg('');
     setConnectionStatus('disconnected');
+    if (onClearResumeHistoryItem) {
+      onClearResumeHistoryItem();
+    }
   };
 
   const handleDownload = () => {
@@ -201,8 +226,8 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
       {connectionStatus === 'connected-turn' ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', flexGrow: 1, justifyContent: 'center' }}>
           <div style={{
-            background: '#fef2f2',
-            border: '1px solid rgba(239, 68, 68, 0.25)',
+            background: 'rgba(239, 68, 68, 0.05)',
+            border: '1px solid rgba(239, 68, 68, 0.2)',
             borderRadius: '16px',
             padding: '1.25rem',
             color: 'var(--accent-red)',
@@ -214,17 +239,24 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 700 }}>
               <AlertTriangle size={18} /> File Sharing Blocked: Non-P2P Connection
             </div>
-            <p style={{ color: '#991b1b', margin: 0, fontSize: '0.85rem', lineHeight: '1.5' }}>
-              Skiima detected that your connection is going through a global relay server (TURN) because direct P2P is blocked by carrier firewalls (CGNAT) or a VPN. **File sharing is blocked over relayed connections to prevent quota overages.**
+            <p style={{ color: 'var(--text-secondary)', margin: 0, fontSize: '0.85rem', lineHeight: '1.4' }}>
+              Skiima blocked this transfer because it's using a relayed connection (TURN). Direct P2P connection is required for absolute privacy and zero-cost high-speed sharing.
             </p>
-            <div style={{ background: '#ffffff', border: '1px solid #fee2e2', padding: '0.75rem', borderRadius: '10px', fontSize: '0.8rem', color: '#4a5568' }}>
-              <strong style={{ color: '#1a202c' }}>How to enable P2P transfer:</strong>
-              <ul style={{ margin: '0.35rem 0 0 1.25rem', padding: 0, display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                <li>Connect both devices to the <strong>same local Wi-Fi network</strong>.</li>
-                <li>Turn off cellular data hotspots.</li>
-                <li>Disable commercial/corporate VPNs on both ends.</li>
-              </ul>
-            </div>
+            <details className="troubleshoot-dropdown">
+              <summary>How to Fix & Unblock Direct P2P</summary>
+              <div style={{ padding: '0.75rem 0 0 0', fontSize: '0.8rem', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                <p style={{ margin: 0, lineHeight: '1.4' }}>
+                  Direct browser-to-browser (P2P) transfers require an unblocked UDP route. Devices do not need to be on the same local network, but symmetric NATs, cellular hot-spots, guest-isolated Wi-Fi, or corporate VPNs can restrict direct routing.
+                </p>
+                <strong style={{ color: 'var(--text-primary)' }}>Resolution Steps:</strong>
+                <ul style={{ margin: '0 0 0 1.25rem', padding: 0, display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                  <li>Disable commercial or corporate VPNs on both devices.</li>
+                  <li>If using cellular 3G/4G/5G mobile hotspots, try switching to standard Wi-Fi.</li>
+                  <li>Ensure the router's AP Isolation (guest Wi-Fi isolation) is disabled.</li>
+                  <li>Try connecting via different networks to establish a direct path.</li>
+                </ul>
+              </div>
+            </details>
           </div>
           <button
             onClick={handleReset}
@@ -312,12 +344,12 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
           {(isTransferring || stats) && !transferDone && (
             <div className="progress-container">
               <div className="progress-header">
-                <span>Receiving File...</span>
+                <span>{isPaused ? 'Transfer Paused by Sender' : 'Receiving File...'}</span>
                 <span>{stats ? Math.round(stats.progress) : 0}%</span>
               </div>
               <div className="progress-track">
                 <div
-                  className="progress-bar cyan"
+                  className={`progress-bar cyan ${isPaused ? 'paused' : ''}`}
                   style={{ width: `${stats ? stats.progress : 0}%` }}
                 ></div>
               </div>
@@ -326,11 +358,11 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
                 <div className="stats-grid">
                   <div className="stat-item">
                     <span className="stat-label">Download Speed</span>
-                    <span className="stat-value">{formatSpeed(stats.speed)}</span>
+                    <span className="stat-value">{isPaused ? '0 Bytes/s' : formatSpeed(stats.speed)}</span>
                   </div>
                   <div className="stat-item">
                     <span className="stat-label">Time Remaining</span>
-                    <span className="stat-value">{stats.timeRemaining}s</span>
+                    <span className="stat-value">{isPaused ? '—' : `${stats.timeRemaining}s`}</span>
                   </div>
                 </div>
               )}
@@ -355,7 +387,7 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
               </button>
 
               {showChunks && stats && (
-                <ChunkVisualizer progress={stats.progress} isTransferring={isTransferring} />
+                <ChunkVisualizer progress={stats.progress} isTransferring={isTransferring && !isPaused} />
               )}
             </div>
           )}
