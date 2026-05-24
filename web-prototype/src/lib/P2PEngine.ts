@@ -49,9 +49,10 @@ function buildIceServers(): RTCIceServer[] {
   if (username && credential) {
     servers.push({
       urls: [
-        'turn:global.turn.metered.ca:80?transport=udp',
-        'turn:global.turn.metered.ca:443?transport=tcp',
-        'turns:global.turn.metered.ca:443?transport=tcp'
+        `stun:${username}.metered.ca:80`,
+        `turn:${username}.metered.ca:80?transport=udp`,
+        `turn:${username}.metered.ca:443?transport=tcp`,
+        `turns:${username}.metered.ca:443?transport=tcp`
       ],
       username: username,
       credential: credential
