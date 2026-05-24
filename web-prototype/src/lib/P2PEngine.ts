@@ -30,28 +30,34 @@ const BUFFER_THRESHOLD = 1024 * 1024; // 1MB buffer threshold for backpressure
 
 /**
  * Builds the ICE server list at runtime.
- * - If Metered.ca credentials are provided via env vars, uses the production
- *   Metered relay servers (reliable, TCP/TLS on port 443 — works on any network).
- * - Falls back to the openrelay demo servers as a last resort.
- * - All UDP STUN entries are intentionally omitted when the network blocks UDP DNS.
+ * Uses Metered.ca production TURN servers when credentials are provided via env vars.
+ * Server URLs are taken directly from Metered's "Show ICE Servers Array" output.
  */
 function buildIceServers(): RTCIceServer[] {
   const meteredUser = import.meta.env.VITE_METERED_USERNAME;
   const meteredCred = import.meta.env.VITE_METERED_CREDENTIAL;
 
   if (meteredUser && meteredCred) {
-    // Metered.ca production TURN — TCP/TLS 443 always passes corporate firewalls
+    // Exact config from Metered.ca "Show ICE Servers Array"
     return [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun.relay.metered.ca:80' },
       {
-        urls: [
-          'turn:a.relay.metered.ca:80',
-          'turn:a.relay.metered.ca:80?transport=tcp',
-          'turn:a.relay.metered.ca:443',
-          'turn:a.relay.metered.ca:443?transport=tcp',
-          'turns:a.relay.metered.ca:443',
-        ],
+        urls: 'turn:global.relay.metered.ca:80',
+        username: meteredUser,
+        credential: meteredCred,
+      },
+      {
+        urls: 'turn:global.relay.metered.ca:80?transport=tcp',
+        username: meteredUser,
+        credential: meteredCred,
+      },
+      {
+        urls: 'turn:global.relay.metered.ca:443',
+        username: meteredUser,
+        credential: meteredCred,
+      },
+      {
+        urls: 'turns:global.relay.metered.ca:443?transport=tcp',
         username: meteredUser,
         credential: meteredCred,
       },
@@ -63,7 +69,6 @@ function buildIceServers(): RTCIceServer[] {
     'Set VITE_METERED_USERNAME + VITE_METERED_CREDENTIAL in Vercel for reliable TURN.');
   return [
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
     {
       urls: [
         'turns:openrelay.metered.ca:443',
@@ -73,7 +78,6 @@ function buildIceServers(): RTCIceServer[] {
       credential: 'openrelayproject',
     },
   ];
-}
 
 export class P2PEngine {
   private pc: RTCPeerConnection | null = null;
