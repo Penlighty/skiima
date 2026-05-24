@@ -13,6 +13,8 @@ interface ReceiverCardProps {
   onBack?: () => void;
   resumeHistoryItem?: HistoryItem | null;
   onClearResumeHistoryItem?: () => void;
+  initialCode?: string;
+  onClearInitialCode?: () => void;
 }
 
 export const ReceiverCard: React.FC<ReceiverCardProps> = ({
@@ -20,7 +22,9 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
   connectionStatus,
   setConnectionStatus,
   onBack,
-  onClearResumeHistoryItem
+  onClearResumeHistoryItem,
+  initialCode,
+  onClearInitialCode
 }) => {
   const [code, setCode] = useState<string>('');
   const [fileMetadata, setFileMetadata] = useState<FileMetadata | null>(null);
@@ -38,6 +42,17 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
       setFileMetadata(metadata);
       setIsTransferring(true);
       setErrorMsg('');
+
+      // Save receiver session with complete file metadata
+      localStorage.setItem('skiima_active_transfer_session', JSON.stringify({
+        role: 'receiver',
+        roomCode: engine.roomCode || code,
+        fileMetadata: {
+          name: metadata.name,
+          size: metadata.size,
+          type: metadata.type
+        }
+      }));
     };
 
     engine.onProgress = (progressStats) => {
@@ -52,6 +67,10 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
       setIsTransferring(false);
       setIsPaused(false);
       setStats((prev) => prev ? { ...prev, progress: 100 } : null);
+
+      // Clear the active session upon successful completion
+      localStorage.removeItem('skiima_active_transfer_session');
+
       if (fileMetadata) {
         historyDb.addShareHistoryItem({
           fileName: fileMetadata.name,
@@ -95,11 +114,47 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
     engine.onTransferStopped = (reason) => {
       setIsTransferring(false);
       setIsPaused(false);
+      setStats(null); // Clear transfer stats
+      setFileMetadata(null); // Clear file metadata so it returns to entering code screen
       setErrorMsg(`Transfer stopped: ${reason}`);
+      localStorage.removeItem('skiima_active_transfer_session');
     };
 
     return () => {};
-  }, [engine, fileMetadata]);
+  }, [engine, fileMetadata, code]);
+
+  // A. Load initial receiver code if provided via direct link
+  useEffect(() => {
+    if (initialCode) {
+      setCode(initialCode);
+      // Save session first to prepare for recovery if interrupted
+      localStorage.setItem('skiima_active_transfer_session', JSON.stringify({
+        role: 'receiver',
+        roomCode: initialCode,
+        fileMetadata: { name: '', size: 0, type: '' }
+      }));
+      engine.connectToPeer(initialCode);
+      if (onClearInitialCode) {
+        onClearInitialCode();
+      }
+    }
+  }, [initialCode, onClearInitialCode, engine]);
+
+  // B. Auto-reconnect on accidental disconnection
+  useEffect(() => {
+    const activeCode = engine.roomCode || code;
+    if (
+      activeCode && 
+      !transferDone && 
+      connectionStatus === 'disconnected'
+    ) {
+      console.log('[Resilience] Accidental receiver disconnection detected. Auto-reconnecting in 2s...');
+      const timer = setTimeout(() => {
+        engine.connectToPeer(activeCode);
+      }, 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [connectionStatus, transferDone, code, engine]);
 
   const handleConnect = (e: React.FormEvent) => {
     e.preventDefault();
@@ -116,6 +171,13 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
       return;
     }
 
+    // Save receiver active session in local storage for resilience
+    localStorage.setItem('skiima_active_transfer_session', JSON.stringify({
+      role: 'receiver',
+      roomCode: trimmedCode,
+      fileMetadata: { name: '', size: 0, type: '' }
+    }));
+
     engine.connectToPeer(trimmedCode);
   };
 
@@ -130,6 +192,9 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
     setDownloadUrl('');
     setErrorMsg('');
     setConnectionStatus('disconnected');
+    
+    localStorage.removeItem('skiima_active_transfer_session');
+    
     if (onClearResumeHistoryItem) {
       onClearResumeHistoryItem();
     }
@@ -157,6 +222,22 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
 
   const formatSpeed = (bytesPerSecond: number) => {
     return `${formatBytes(bytesPerSecond)}/s`;
+  };
+
+  const formatTimeRemaining = (seconds: number): string => {
+    if (seconds === Infinity || isNaN(seconds) || seconds < 0) return 'Calculating...';
+    if (seconds === 0) return '0s';
+    
+    const hrs = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    
+    const parts: string[] = [];
+    if (hrs > 0) parts.push(`${hrs}h`);
+    if (mins > 0) parts.push(`${mins}m`);
+    if (secs > 0 || parts.length === 0) parts.push(`${secs}s`);
+    
+    return parts.join(' ');
   };
 
   return (
@@ -362,7 +443,7 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
                   </div>
                   <div className="stat-item">
                     <span className="stat-label">Time Remaining</span>
-                    <span className="stat-value">{isPaused ? '—' : `${stats.timeRemaining}s`}</span>
+                    <span className="stat-value">{isPaused ? '—' : formatTimeRemaining(stats.timeRemaining)}</span>
                   </div>
                 </div>
               )}

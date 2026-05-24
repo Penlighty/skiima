@@ -34,6 +34,7 @@ function App() {
   const [outboundCancelFn, setOutboundCancelFn] = useState<(() => void) | null>(null);
   const [quickSendFile, setQuickSendFile] = useState<File | null>(null);
   const [resumeHistoryItem, setResumeHistoryItem] = useState<HistoryItem | null>(null);
+  const [initialReceiverCode, setInitialReceiverCode] = useState<string>('');
 
   // Contacts and recent history states
   const [contacts, setContacts] = useState<ContactItem[]>([]);
@@ -63,6 +64,52 @@ function App() {
       // System mode: CSS @media query prefers-color-scheme handles it automatically
     }
   }, [themeMode]);
+
+  // 1.5. Resilient Session Recovery & URL Param Detection on Mount
+  useEffect(() => {
+    // A. Parse URL ?room=xxxxxx parameter
+    const params = new URLSearchParams(window.location.search);
+    const roomParam = params.get('room');
+    if (roomParam && roomParam.length === 6 && !isNaN(Number(roomParam))) {
+      window.history.replaceState({}, document.title, window.location.pathname);
+      console.log('[Resilience] Found room code in URL parameters:', roomParam);
+      setInitialReceiverCode(roomParam);
+      setActiveView('receive');
+      return;
+    }
+
+    // B. Check for active transfer session in localStorage
+    const activeSessionRaw = localStorage.getItem('skiima_active_transfer_session');
+    if (activeSessionRaw) {
+      try {
+        const session = JSON.parse(activeSessionRaw);
+        if (session && session.roomCode) {
+          console.log('[Resilience] Found unfinished active transfer session:', session);
+          if (session.role === 'sender' && session.fileMetadata) {
+            const dummyHistoryItem: HistoryItem = {
+              id: `hist_recover_${Math.random().toString(36).substring(2, 8)}`,
+              fileName: session.fileMetadata.name,
+              fileSize: session.fileMetadata.size,
+              transferDate: new Date().toISOString(),
+              peerRole: 'sender',
+              peerId: 'recovered',
+              peerName: 'Paired Device',
+              status: 'failed'
+            };
+            setResumeHistoryItem(dummyHistoryItem);
+            localStorage.setItem('skiima_recovered_room_code', session.roomCode);
+            setActiveView('send');
+          } else if (session.role === 'receiver') {
+            setInitialReceiverCode(session.roomCode);
+            setActiveView('receive');
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to parse active transfer session recovery:', e);
+        localStorage.removeItem('skiima_active_transfer_session');
+      }
+    }
+  }, []);
 
   // 2. Initialize Profile and Firestore Presence Heartbeat
   useEffect(() => {
@@ -415,9 +462,9 @@ function App() {
             style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}
             title="Go to Dashboard"
           >
-            <img src="/favicon.svg" alt="Skiima Logo" className="header-logo" style={{ width: '42px', height: '40px' }} />
-            <h1 style={{ fontSize: '1.75rem', fontWeight: 700, margin: 0, letterSpacing: '-0.03em', color: 'var(--text-primary)', display: 'flex', alignItems: 'center' }}>
-              Skiima<span style={{ color: 'var(--accent-cyan)', fontWeight: 600 }}>Share</span>
+            <img src="/favicon.svg" alt="Skiima Logo" className="header-logo" />
+            <h1 className="header-title">
+              Skiima<span>Share</span>
             </h1>
           </div>
 
@@ -872,6 +919,8 @@ function App() {
             }}
             resumeHistoryItem={resumeHistoryItem}
             onClearResumeHistoryItem={() => setResumeHistoryItem(null)}
+            initialCode={initialReceiverCode}
+            onClearInitialCode={() => setInitialReceiverCode('')}
           />
         )}
 

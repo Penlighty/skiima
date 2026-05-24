@@ -46,6 +46,14 @@ export const SenderCard: React.FC<SenderCardProps> = ({
     setTransferDone(false);
     setStats(null);
     const generatedCode = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // Save active transfer session for resilience
+    localStorage.setItem('skiima_active_transfer_session', JSON.stringify({
+      role: 'sender',
+      roomCode: generatedCode,
+      fileMetadata: { name: '', size: 0, type: '' }
+    }));
+
     engine.initialize(generatedCode);
   };
 
@@ -65,6 +73,10 @@ export const SenderCard: React.FC<SenderCardProps> = ({
       setIsTransferring(false);
       setIsPaused(false);
       setStats((prev) => prev ? { ...prev, progress: 100 } : null);
+      
+      // Clear active transfer session upon success
+      localStorage.removeItem('skiima_active_transfer_session');
+
       if (file) {
         historyDb.addShareHistoryItem({
           fileName: file.name,
@@ -117,7 +129,11 @@ export const SenderCard: React.FC<SenderCardProps> = ({
     engine.onTransferStopped = (reason) => {
       setIsTransferring(false);
       setIsPaused(false);
+      setStats(null); // Clear transfer stats to hide the progress card
       setErrorMsg(`Transfer stopped: ${reason}`);
+      
+      // Clear active transfer session upon explicit stop
+      localStorage.removeItem('skiima_active_transfer_session');
     };
 
     return () => {};
@@ -159,6 +175,38 @@ export const SenderCard: React.FC<SenderCardProps> = ({
       });
     }
   }, [connectionStatus, file, isTransferring, transferDone, engine]);
+
+  // Save/update session on file loaded (after connecting first)
+  useEffect(() => {
+    if (file && roomCode) {
+      localStorage.setItem('skiima_active_transfer_session', JSON.stringify({
+        role: 'sender',
+        roomCode: roomCode,
+        fileMetadata: {
+          name: file.name,
+          size: file.size,
+          type: file.type || 'application/octet-stream'
+        }
+      }));
+    }
+  }, [file, roomCode]);
+
+  // Auto-reconnect on accidental disconnection
+  useEffect(() => {
+    if (
+      roomCode && 
+      !transferDone && 
+      !showStopConfirm && 
+      !engine.isStopped && 
+      connectionStatus === 'disconnected'
+    ) {
+      console.log('[Resilience] Accidental sender disconnection detected. Auto-reconnecting in 2s...');
+      const timer = setTimeout(() => {
+        engine.initialize(roomCode);
+      }, 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [connectionStatus, transferDone, showStopConfirm, roomCode, engine]);
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
@@ -206,8 +254,23 @@ export const SenderCard: React.FC<SenderCardProps> = ({
     setTransferDone(false);
     setStats(null);
 
-    const generatedCode = Math.floor(100000 + Math.random() * 900000).toString();
-    engine.initialize(generatedCode);
+    // Reuse recovered room code if present, otherwise generate a new one
+    const recoveredCode = localStorage.getItem('skiima_recovered_room_code');
+    const codeToUse = recoveredCode || Math.floor(100000 + Math.random() * 900000).toString();
+    localStorage.removeItem('skiima_recovered_room_code');
+
+    // Save active transfer session for resilience
+    localStorage.setItem('skiima_active_transfer_session', JSON.stringify({
+      role: 'sender',
+      roomCode: codeToUse,
+      fileMetadata: {
+        name: selectedFile.name,
+        size: selectedFile.size,
+        type: selectedFile.type || 'application/octet-stream'
+      }
+    }));
+
+    engine.initialize(codeToUse);
   };
 
   const handleCopyCode = async () => {
@@ -232,6 +295,10 @@ export const SenderCard: React.FC<SenderCardProps> = ({
     setConnectionStatus('disconnected');
     setIsPaused(false);
     setShowStopConfirm(false);
+    
+    // Clear active session upon reset
+    localStorage.removeItem('skiima_active_transfer_session');
+    
     if (onClearResumeHistoryItem) {
       onClearResumeHistoryItem();
     }
@@ -248,6 +315,22 @@ export const SenderCard: React.FC<SenderCardProps> = ({
 
   const formatSpeed = (bytesPerSecond: number) => {
     return `${formatBytes(bytesPerSecond)}/s`;
+  };
+
+  const formatTimeRemaining = (seconds: number): string => {
+    if (seconds === Infinity || isNaN(seconds) || seconds < 0) return 'Calculating...';
+    if (seconds === 0) return '0s';
+    
+    const hrs = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    
+    const parts: string[] = [];
+    if (hrs > 0) parts.push(`${hrs}h`);
+    if (mins > 0) parts.push(`${mins}m`);
+    if (secs > 0 || parts.length === 0) parts.push(`${secs}s`);
+    
+    return parts.join(' ');
   };
 
   return (
@@ -425,7 +508,7 @@ export const SenderCard: React.FC<SenderCardProps> = ({
                 </button>
                 <a
                   href={`https://api.whatsapp.com/send?text=${encodeURIComponent(
-                    `Hey! Connect with me on Skiima Share using this code: *${roomCode}*. Open ${window.location.origin} to start the direct P2P transfer.`
+                    `Hey! Connect with me on Skiima Share using this code: *${roomCode}*. Or click this direct link to connect instantly: ${window.location.origin}?room=${roomCode}`
                   )}`}
                   target="_blank"
                   rel="noopener noreferrer"
@@ -559,7 +642,7 @@ export const SenderCard: React.FC<SenderCardProps> = ({
                   </button>
                   <a
                     href={`https://api.whatsapp.com/send?text=${encodeURIComponent(
-                      `Hey! Connect with me on Skiima Share using this code: *${roomCode}*. Open ${window.location.origin} to start the direct P2P transfer.`
+                      `Hey! Connect with me on Skiima Share using this code: *${roomCode}*. Or click this direct link to connect instantly: ${window.location.origin}?room=${roomCode}`
                     )}`}
                     target="_blank"
                     rel="noopener noreferrer"
@@ -661,7 +744,7 @@ export const SenderCard: React.FC<SenderCardProps> = ({
                   </div>
                   <div className="stat-item">
                     <span className="stat-label">Time Remaining</span>
-                    <span className="stat-value">{isPaused ? '—' : `${stats.timeRemaining}s`}</span>
+                    <span className="stat-value">{isPaused ? '—' : formatTimeRemaining(stats.timeRemaining)}</span>
                   </div>
                 </div>
               )}

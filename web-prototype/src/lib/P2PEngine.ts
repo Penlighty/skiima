@@ -27,8 +27,9 @@ export interface TransferStats {
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected-p2p' | 'connected-turn';
 
-const CHUNK_SIZE = 16 * 1024; // 16KB chunks (optimal for WebRTC MTU size)
-const BUFFER_THRESHOLD = 256 * 1024; // 256KB buffer threshold to prevent memory overflows
+const CHUNK_SIZE = 64 * 1024; // 64KB chunks (optimal for modern WebRTC MTU size)
+const BLOCK_SIZE = 1024 * 1024; // 1MB block read size to saturate disk IO
+const BUFFER_THRESHOLD = 512 * 1024; // 512KB buffer threshold for backpressure
 
 /**
  * Builds the ICE server list at runtime.
@@ -36,49 +37,14 @@ const BUFFER_THRESHOLD = 256 * 1024; // 256KB buffer threshold to prevent memory
  * Server URLs are taken directly from Metered's "Show ICE Servers Array" output.
  */
 function buildIceServers(): RTCIceServer[] {
-  const meteredUser = import.meta.env.VITE_METERED_USERNAME;
-  const meteredCred = import.meta.env.VITE_METERED_CREDENTIAL;
-
-  if (meteredUser && meteredCred) {
-    // Exact config from Metered.ca "Show ICE Servers Array"
-    return [
-      { urls: 'stun:stun.relay.metered.ca:80' },
-      {
-        urls: 'turn:global.relay.metered.ca:80',
-        username: meteredUser,
-        credential: meteredCred,
-      },
-      {
-        urls: 'turn:global.relay.metered.ca:80?transport=tcp',
-        username: meteredUser,
-        credential: meteredCred,
-      },
-      {
-        urls: 'turn:global.relay.metered.ca:443',
-        username: meteredUser,
-        credential: meteredCred,
-      },
-      {
-        urls: 'turns:global.relay.metered.ca:443?transport=tcp',
-        username: meteredUser,
-        credential: meteredCred,
-      },
-    ];
-  }
-
-  // Fallback: openrelay demo (free but unreliable — only TCP 443 entries kept)
-  console.warn('[ICE] No Metered credentials found. Using openrelay fallback. ' +
-    'Set VITE_METERED_USERNAME + VITE_METERED_CREDENTIAL in Vercel for reliable TURN.');
+  // We completely bypass and avoid setting up TURN relay servers.
+  // Direct P2P transfers are 100% free and only require STUN servers.
+  // This guarantees that zero TURN bandwidth or allocation quota is ever consumed on Metered.ca.
   return [
     { urls: 'stun:stun.l.google.com:19302' },
-    {
-      urls: [
-        'turns:openrelay.metered.ca:443',
-        'turn:openrelay.metered.ca:443?transport=tcp',
-      ],
-      username: 'openrelayproject',
-      credential: 'openrelayproject',
-    },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun.relay.metered.ca:80' }
   ];
 }
 
@@ -161,10 +127,12 @@ export class P2PEngine {
       // Listen for connection state changes (Sender)
       pc.onconnectionstatechange = () => {
         console.log('[WebRTC] Sender connection state:', pc.connectionState);
-        if (pc.connectionState === 'failed') {
-          console.warn('[WebRTC] Sender connection failed, attempting ICE restart...');
-          pc.restartIce();
-        } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'closed') {
+        if (
+          pc.connectionState === 'failed' || 
+          pc.connectionState === 'disconnected' || 
+          pc.connectionState === 'closed'
+        ) {
+          console.warn('[WebRTC] Sender connection failed or lost. Transitioning status to disconnected...');
           this.updateStatus('disconnected');
         }
         // NOTE: 'connected' status is set from dc.onopen to guarantee DataChannel is ready
@@ -265,10 +233,12 @@ export class P2PEngine {
       // Listen for connection state changes (Receiver)
       pc.onconnectionstatechange = () => {
         console.log('[WebRTC] Receiver connection state:', pc.connectionState);
-        if (pc.connectionState === 'failed') {
-          console.warn('[WebRTC] Receiver connection failed, attempting ICE restart...');
-          pc.restartIce();
-        } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'closed') {
+        if (
+          pc.connectionState === 'failed' || 
+          pc.connectionState === 'disconnected' || 
+          pc.connectionState === 'closed'
+        ) {
+          console.warn('[WebRTC] Receiver connection failed or lost. Transitioning status to disconnected...');
           this.updateStatus('disconnected');
         }
         // NOTE: 'connected' status is set from dc.onopen to guarantee DataChannel is ready
@@ -378,7 +348,7 @@ export class P2PEngine {
   }
 
   /**
-   * Starts chunked file streaming from a specific byte offset
+   * Starts high-speed block-buffered file streaming from a specific byte offset
    */
   public startChunkStreaming(startOffset: number): void {
     const file = this.currentFile;
@@ -393,70 +363,80 @@ export class P2PEngine {
 
     const fileReader = new FileReader();
     const totalSize = file.size;
-    let chunkIndex = Math.floor(startOffset / CHUNK_SIZE);
     
     let startTime = Date.now();
     let lastStatsTime = Date.now();
     let bytesSentInSession = 0;
 
-    const readNextChunk = () => {
+    const readNextBlock = () => {
       if (this.isPaused || this.isStopped) return;
-      const slice = file.slice(this.offset, this.offset + CHUNK_SIZE);
+      const slice = file.slice(this.offset, Math.min(this.offset + BLOCK_SIZE, totalSize));
       fileReader.readAsArrayBuffer(slice);
     };
 
-    this.readNextChunkFn = readNextChunk;
+    this.readNextChunkFn = readNextBlock;
 
     fileReader.onload = async (e) => {
       if (this.isStopped || this.isPaused) return;
 
       if (e.target?.result instanceof ArrayBuffer) {
-        const buffer = e.target.result;
+        const blockBuffer = e.target.result;
+        let blockOffset = 0;
 
-        // Apply backpressure using RTCDataChannel's bufferedAmount
-        if (this.dataChannel && this.dataChannel.bufferedAmount > BUFFER_THRESHOLD) {
-          await this.waitBufferLow(this.dataChannel);
-        }
+        while (blockOffset < blockBuffer.byteLength && !this.isStopped && !this.isPaused) {
+          const chunkLength = Math.min(CHUNK_SIZE, blockBuffer.byteLength - blockOffset);
+          const chunk = blockBuffer.slice(blockOffset, blockOffset + chunkLength);
 
-        if (this.isStopped || this.isPaused) return;
-
-        // Send the raw binary chunk directly
-        if (this.dataChannel && this.dataChannel.readyState === 'open') {
-          this.dataChannel.send(buffer);
-
-          this.offset += buffer.byteLength;
-          bytesSentInSession += buffer.byteLength;
-          chunkIndex++;
-
-          // Real-time speed metrics calculation
-          const now = Date.now();
-          if (now - lastStatsTime >= 200 || this.offset === totalSize) {
-            const timePassed = (now - startTime) / 1000 || 0.001;
-            const currentSpeed = bytesSentInSession / timePassed; // bytes/sec
-            const remainingBytes = totalSize - this.offset;
-            const timeRemaining = remainingBytes / (currentSpeed || 1);
-
-            if (this.onProgress) {
-              this.onProgress({
-                progress: Math.min((this.offset / totalSize) * 100, 100),
-                speed: currentSpeed,
-                bytesTransferred: this.offset,
-                timeRemaining: Math.max(0, Math.round(timeRemaining)),
-              });
-            }
-            lastStatsTime = now;
+          // Apply backpressure using RTCDataChannel's bufferedAmount
+          if (this.dataChannel && this.dataChannel.bufferedAmount > BUFFER_THRESHOLD) {
+            await this.waitBufferLow(this.dataChannel);
           }
 
-          if (this.offset < totalSize) {
-            if (!this.isPaused && !this.isStopped) {
-              readNextChunk();
+          if (this.isStopped || this.isPaused) return;
+
+          // Send the raw binary chunk directly
+          if (this.dataChannel && this.dataChannel.readyState === 'open') {
+            this.dataChannel.send(chunk);
+
+            this.offset += chunk.byteLength;
+            blockOffset += chunk.byteLength;
+            bytesSentInSession += chunk.byteLength;
+
+            // Real-time speed metrics calculation
+            const now = Date.now();
+            if (now - lastStatsTime >= 200 || this.offset === totalSize) {
+              const timePassed = (now - startTime) / 1000 || 0.001;
+              const currentSpeed = bytesSentInSession / timePassed; // bytes/sec
+              const remainingBytes = totalSize - this.offset;
+              const timeRemaining = remainingBytes / (currentSpeed || 1);
+
+              if (this.onProgress) {
+                this.onProgress({
+                  progress: Math.min((this.offset / totalSize) * 100, 100),
+                  speed: currentSpeed,
+                  bytesTransferred: this.offset,
+                  timeRemaining: Math.max(0, Math.round(timeRemaining)),
+                });
+              }
+              lastStatsTime = now;
             }
           } else {
-            // Signal completed transfer as JSON string
+            console.warn('[WebRTC] DataChannel closed during block streaming loop.');
+            return;
+          }
+        }
+
+        if (this.offset < totalSize) {
+          if (!this.isPaused && !this.isStopped) {
+            readNextBlock();
+          }
+        } else {
+          // Signal completed transfer as JSON string
+          if (this.dataChannel && this.dataChannel.readyState === 'open') {
             this.dataChannel.send(JSON.stringify({ type: 'done' }));
-            if (this.onTransferComplete) {
-              this.onTransferComplete();
-            }
+          }
+          if (this.onTransferComplete) {
+            this.onTransferComplete();
           }
         }
       }
@@ -464,12 +444,12 @@ export class P2PEngine {
 
     fileReader.onerror = () => {
       if (this.onError) {
-        this.onError('Error reading file chunk.');
+        this.onError('Error reading file block.');
       }
     };
 
-    // Initiate first chunk read
-    readNextChunk();
+    // Initiate first block read
+    readNextBlock();
   }
 
   /**

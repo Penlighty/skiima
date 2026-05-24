@@ -179,6 +179,32 @@ p {
   line-height: 1.6;
 }
 
+/* Unified Header Styling */
+.header-logo {
+  width: 42px;
+  height: 40px;
+  transition: transform 0.3s ease;
+}
+
+.header-logo:hover {
+  transform: scale(1.08) rotate(5deg);
+}
+
+.header-title {
+  font-family: var(--font-sans);
+  font-weight: 800;
+  font-size: 1.65rem;
+  letter-spacing: -0.03em;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.header-title span {
+  background: linear-gradient(135deg, var(--accent-cyan) 0%, var(--accent-purple) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
 /* Clinical Neumorphic Card */
 .glass-panel {
   background: var(--bg-glass);
@@ -642,6 +668,15 @@ footer p {
   .nav-tab {
     padding: 0.6rem 1rem !important;
     font-size: 0.85rem !important;
+  }
+
+  .header-logo {
+    width: 32px !important;
+    height: 30px !important;
+  }
+
+  .header-title {
+    font-size: 1.35rem !important;
   }
 }
 
