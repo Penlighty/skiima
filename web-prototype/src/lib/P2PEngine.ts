@@ -32,20 +32,42 @@ const BLOCK_SIZE = 1024 * 1024; // 1MB block read size to saturate disk IO
 const BUFFER_THRESHOLD = 512 * 1024; // 512KB buffer threshold for backpressure
 
 /**
- * Builds the ICE server list at runtime.
- * Uses Metered.ca production TURN servers when credentials are provided via env vars.
- * Server URLs are taken directly from Metered's "Show ICE Servers Array" output.
+ * Asynchronously fetches ICE servers.
+ * Dynamically queries our secure Vercel API for Cloudflare Calls TURN servers in production.
+ * Gracefully falls back to static configurations (Google STUN + Metered.ca) for local development or API outages.
  */
-function buildIceServers(): RTCIceServer[] {
-  const username = import.meta.env.VITE_METERED_USERNAME;
-  const credential = import.meta.env.VITE_METERED_CREDENTIAL;
-
+async function fetchIceServers(): Promise<RTCIceServer[]> {
   const servers: RTCIceServer[] = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
     { urls: 'stun:stun.cloudflare.com:3478' }
   ];
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000); // 3 seconds timeout
+
+    const res = await fetch('/api/turn', { signal: controller.signal });
+    clearTimeout(timeoutId);
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.iceServers && Array.isArray(data.iceServers)) {
+        console.log('[ICE] Successfully retrieved dynamic Cloudflare Calls TURN servers.');
+        servers.push(...data.iceServers);
+        return servers;
+      }
+    } else {
+      console.warn(`[ICE] Cloudflare API responded with status ${res.status}. Falling back to static servers.`);
+    }
+  } catch (err) {
+    console.warn('[ICE] Failed to fetch dynamic Cloudflare TURN servers, falling back to static config:', err);
+  }
+
+  // Fallback: static configuration (Metered.ca or Google STUN)
+  const username = import.meta.env.VITE_METERED_USERNAME;
+  const credential = import.meta.env.VITE_METERED_CREDENTIAL;
 
   if (username && credential) {
     // 1. Hostname-based TURN configuration (Standard path)
@@ -156,97 +178,89 @@ export class P2PEngine {
     const roomCode = customId;
     this.roomCode = roomCode;
 
-    const peerOptions: RTCConfiguration = {
-      iceServers: buildIceServers(),
-      iceTransportPolicy: 'all'
-    };
+    // Create the WebRTC Session Offer asynchronously
+    (async () => {
+      try {
+        const iceServers = await fetchIceServers();
+        const peerOptions: RTCConfiguration = {
+          iceServers: iceServers,
+          iceTransportPolicy: 'all'
+        };
 
-    try {
-      const pc = new RTCPeerConnection(peerOptions);
-      this.pc = pc;
+        const pc = new RTCPeerConnection(peerOptions);
+        this.pc = pc;
 
-      // Create the WebRTC DataChannel
-      const dc = pc.createDataChannel('skiima-channel', { ordered: true });
-      this.setupDataChannel(dc);
+        // Create the WebRTC DataChannel
+        const dc = pc.createDataChannel('skiima-channel', { ordered: true });
+        this.setupDataChannel(dc);
 
-      // Write ICE Candidates to Firestore rooms/{roomCode}/senderCandidates
-      pc.onicecandidate = (event) => {
-        if (event.candidate) {
-          const candidateRef = collection(db, 'rooms', roomCode, 'senderCandidates');
-          addDoc(candidateRef, event.candidate.toJSON()).catch((err: any) => {
-            console.error('Failed to write local sender ICE candidate:', err);
-          });
-        }
-      };
-
-      // Listen for connection state changes (Sender)
-      pc.onconnectionstatechange = () => {
-        console.log('[WebRTC] Sender connection state:', pc.connectionState);
-        if (
-          pc.connectionState === 'failed' || 
-          pc.connectionState === 'disconnected' || 
-          pc.connectionState === 'closed'
-        ) {
-          console.warn('[WebRTC] Sender connection failed or lost. Transitioning status to disconnected...');
-          this.updateStatus('disconnected');
-        }
-        // NOTE: 'connected' status is set from dc.onopen to guarantee DataChannel is ready
-      };
-
-      pc.onicecandidateerror = (ev: RTCPeerConnectionIceErrorEvent) => {
-        console.warn('[ICE] Candidate error:', ev.errorCode, ev.errorText, ev.url);
-      };
-
-      // Create the WebRTC Session Offer
-      (async () => {
-        try {
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-
-          // Write offer SDP to Firestore
-          const roomDocRef = doc(db, 'rooms', roomCode);
-          await setDoc(roomDocRef, {
-            offer: {
-              sdp: offer.sdp,
-              type: offer.type
-            },
-            createdAt: new Date().toISOString()
-          });
-
-          if (this.onPeerIdReady) {
-            this.onPeerIdReady(roomCode);
+        // Write ICE Candidates to Firestore rooms/{roomCode}/senderCandidates
+        pc.onicecandidate = (event) => {
+          if (event.candidate) {
+            const candidateRef = collection(db, 'rooms', roomCode, 'senderCandidates');
+            addDoc(candidateRef, event.candidate.toJSON()).catch((err: any) => {
+              console.error('Failed to write local sender ICE candidate:', err);
+            });
           }
+        };
 
-          this.unsubscribeRoom = onSnapshot(roomDocRef, (snapshot: any) => {
-            const data = snapshot.data();
-            if (data && data.answer && !pc.currentRemoteDescription) {
-              const answer = new RTCSessionDescription(data.answer);
-              pc.setRemoteDescription(answer)
-                .then(() => {
-                  console.log('[WebRTC] Set remote Answer SDP successfully');
-                  // Now listen to remote receiver's ICE candidates
-                  this.listenToRemoteCandidates(roomCode, 'receiverCandidates');
-                })
-                .catch((err: any) => {
-                  console.error('Failed to set remote description:', err);
-                });
-            }
-          });
+        // Listen for connection state changes (Sender)
+        pc.onconnectionstatechange = () => {
+          console.log('[WebRTC] Sender connection state:', pc.connectionState);
+          if (
+            pc.connectionState === 'failed' || 
+            pc.connectionState === 'disconnected' || 
+            pc.connectionState === 'closed'
+          ) {
+            console.warn('[WebRTC] Sender connection failed or lost. Transitioning status to disconnected...');
+            this.updateStatus('disconnected');
+          }
+          // NOTE: 'connected' status is set from dc.onopen to guarantee DataChannel is ready
+        };
 
-        } catch (err: any) {
-          console.error('[WebRTC] Error during negotiation initialization:', err);
-          if (this.onError) this.onError(err.message || 'Failed to negotiate WebRTC offer.');
-          this.updateStatus('disconnected');
+        pc.onicecandidateerror = (ev: RTCPeerConnectionIceErrorEvent) => {
+          console.warn('[ICE] Candidate error:', ev.errorCode, ev.errorText, ev.url);
+        };
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        // Write offer SDP to Firestore
+        const roomDocRef = doc(db, 'rooms', roomCode);
+        await setDoc(roomDocRef, {
+          offer: {
+            sdp: offer.sdp,
+            type: offer.type
+          },
+          createdAt: new Date().toISOString()
+        });
+
+        if (this.onPeerIdReady) {
+          this.onPeerIdReady(roomCode);
         }
-      })();
 
-    } catch (e: any) {
-      console.error('[WebRTC] Initialization failed:', e);
-      if (this.onError) {
-        this.onError(e.message || 'Failed to instantiate RTCPeerConnection.');
+        this.unsubscribeRoom = onSnapshot(roomDocRef, (snapshot: any) => {
+          const data = snapshot.data();
+          if (data && data.answer && !pc.currentRemoteDescription) {
+            const answer = new RTCSessionDescription(data.answer);
+            pc.setRemoteDescription(answer)
+              .then(() => {
+                console.log('[WebRTC] Set remote Answer SDP successfully');
+                // Now listen to remote receiver's ICE candidates
+                this.listenToRemoteCandidates(roomCode, 'receiverCandidates');
+              })
+              .catch((err: any) => {
+                console.error('Failed to set remote description:', err);
+              });
+          }
+        });
+
+      } catch (err: any) {
+        console.error('[WebRTC] Initialization or negotiation failed:', err);
+        if (this.onError) this.onError(err.message || 'Failed to negotiate WebRTC offer.');
+        this.updateStatus('disconnected');
       }
-      this.updateStatus('disconnected');
-    }
+    })();
   }
 
   /**
@@ -260,95 +274,87 @@ export class P2PEngine {
     const roomCode = senderPeerId;
     this.roomCode = roomCode;
 
-    const peerOptions: RTCConfiguration = {
-      iceServers: buildIceServers(),
-      iceTransportPolicy: 'all'
-    };
+    // Retrieve Offer SDP from Firestore and generate Answer SDP asynchronously
+    (async () => {
+      try {
+        const iceServers = await fetchIceServers();
+        const peerOptions: RTCConfiguration = {
+          iceServers: iceServers,
+          iceTransportPolicy: 'all'
+        };
 
-    try {
-      const pc = new RTCPeerConnection(peerOptions);
-      this.pc = pc;
+        const pc = new RTCPeerConnection(peerOptions);
+        this.pc = pc;
 
-      // Handle receiving WebRTC DataChannel
-      pc.ondatachannel = (event) => {
-        console.log('[WebRTC] DataChannel received from sender');
-        this.setupDataChannel(event.channel);
-      };
+        // Handle receiving WebRTC DataChannel
+        pc.ondatachannel = (event) => {
+          console.log('[WebRTC] DataChannel received from sender');
+          this.setupDataChannel(event.channel);
+        };
 
-      // Write ICE Candidates to Firestore rooms/{roomCode}/receiverCandidates
-      pc.onicecandidate = (event) => {
-        if (event.candidate) {
-          const candidateRef = collection(db, 'rooms', roomCode, 'receiverCandidates');
-          addDoc(candidateRef, event.candidate.toJSON()).catch((err: any) => {
-            console.error('Failed to write local receiver ICE candidate:', err);
-          });
-        }
-      };
-
-      // Listen for connection state changes (Receiver)
-      pc.onconnectionstatechange = () => {
-        console.log('[WebRTC] Receiver connection state:', pc.connectionState);
-        if (
-          pc.connectionState === 'failed' || 
-          pc.connectionState === 'disconnected' || 
-          pc.connectionState === 'closed'
-        ) {
-          console.warn('[WebRTC] Receiver connection failed or lost. Transitioning status to disconnected...');
-          this.updateStatus('disconnected');
-        }
-        // NOTE: 'connected' status is set from dc.onopen to guarantee DataChannel is ready
-      };
-
-      pc.onicecandidateerror = (ev: RTCPeerConnectionIceErrorEvent) => {
-        console.warn('[ICE] Candidate error:', ev.errorCode, ev.errorText, ev.url);
-      };
-
-      // Retrieve Offer SDP from Firestore and generate Answer SDP
-      (async () => {
-        try {
-          const roomDocRef = doc(db, 'rooms', roomCode);
-          const roomSnapshot = await getDoc(roomDocRef);
-
-          if (!roomSnapshot.exists()) {
-            throw new Error('Connection room code not found. Please double check.');
+        // Write ICE Candidates to Firestore rooms/{roomCode}/receiverCandidates
+        pc.onicecandidate = (event) => {
+          if (event.candidate) {
+            const candidateRef = collection(db, 'rooms', roomCode, 'receiverCandidates');
+            addDoc(candidateRef, event.candidate.toJSON()).catch((err: any) => {
+              console.error('Failed to write local receiver ICE candidate:', err);
+            });
           }
+        };
 
-          const data = roomSnapshot.data();
-          if (!data || !data.offer) {
-            throw new Error('Room is active, but the offer description is missing.');
+        // Listen for connection state changes (Receiver)
+        pc.onconnectionstatechange = () => {
+          console.log('[WebRTC] Receiver connection state:', pc.connectionState);
+          if (
+            pc.connectionState === 'failed' || 
+            pc.connectionState === 'disconnected' || 
+            pc.connectionState === 'closed'
+          ) {
+            console.warn('[WebRTC] Receiver connection failed or lost. Transitioning status to disconnected...');
+            this.updateStatus('disconnected');
           }
+          // NOTE: 'connected' status is set from dc.onopen to guarantee DataChannel is ready
+        };
 
-          const offer = new RTCSessionDescription(data.offer);
-          await pc.setRemoteDescription(offer);
+        pc.onicecandidateerror = (ev: RTCPeerConnectionIceErrorEvent) => {
+          console.warn('[ICE] Candidate error:', ev.errorCode, ev.errorText, ev.url);
+        };
 
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
+        const roomDocRef = doc(db, 'rooms', roomCode);
+        const roomSnapshot = await getDoc(roomDocRef);
 
-          // Update room with Answer SDP
-          await updateDoc(roomDocRef, {
-            answer: {
-              sdp: answer.sdp,
-              type: answer.type
-            }
-          });
-
-          // Listen to remote sender's ICE candidates
-          this.listenToRemoteCandidates(roomCode, 'senderCandidates');
-
-        } catch (err: any) {
-          console.error('[WebRTC] Receiver connection negotiation failed:', err);
-          if (this.onError) this.onError(err.message || 'Failed to complete handshake.');
-          this.updateStatus('disconnected');
+        if (!roomSnapshot.exists()) {
+          throw new Error('Connection room code not found. Please double check.');
         }
-      })();
 
-    } catch (e: any) {
-      console.error('[WebRTC] Receiver initialization failed:', e);
-      if (this.onError) {
-        this.onError(e.message || 'Failed to instantiate RTCPeerConnection.');
+        const data = roomSnapshot.data();
+        if (!data || !data.offer) {
+          throw new Error('Room is active, but the offer description is missing.');
+        }
+
+        const offer = new RTCSessionDescription(data.offer);
+        await pc.setRemoteDescription(offer);
+
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+
+        // Update room with Answer SDP
+        await updateDoc(roomDocRef, {
+          answer: {
+            sdp: answer.sdp,
+            type: answer.type
+          }
+        });
+
+        // Listen to remote sender's ICE candidates
+        this.listenToRemoteCandidates(roomCode, 'senderCandidates');
+
+      } catch (err: any) {
+        console.error('[WebRTC] Receiver connection negotiation failed:', err);
+        if (this.onError) this.onError(err.message || 'Failed to complete handshake.');
+        this.updateStatus('disconnected');
       }
-      this.updateStatus('disconnected');
-    }
+    })();
   }
 
   /**
