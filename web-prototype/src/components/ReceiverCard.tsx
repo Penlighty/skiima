@@ -3,6 +3,7 @@ import { DownloadCloud, File, ArrowRight, RotateCcw, AlertTriangle, Radio, Downl
 import { P2PEngine } from '../lib/P2PEngine';
 import type { TransferStats, ConnectionStatus, FileMetadata } from '../lib/P2PEngine';
 import { historyDb } from '../lib/historyDb';
+import { ChunkVisualizer } from './ChunkVisualizer';
 
 interface ReceiverCardProps {
   engine: P2PEngine;
@@ -22,6 +23,7 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
   const [transferDone, setTransferDone] = useState<boolean>(false);
   const [downloadUrl, setDownloadUrl] = useState<string>('');
   const [errorMsg, setErrorMsg] = useState<string>('');
+  const [showChunks, setShowChunks] = useState<boolean>(false);
 
   // Hook up engine events
   useEffect(() => {
@@ -225,6 +227,30 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
             </div>
           )}
 
+          {/* TURN Connection advisory warning */}
+          {connectionStatus === 'connected-turn' && !transferDone && (
+            <div style={{
+              background: 'rgba(245, 158, 11, 0.05)',
+              border: '1px solid rgba(245, 158, 11, 0.15)',
+              borderRadius: '16px',
+              padding: '1rem',
+              marginBottom: '1rem',
+              color: '#f59e0b',
+              fontSize: '0.8rem',
+              lineHeight: '1.4',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.5rem'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontWeight: 600 }}>
+                <AlertTriangle size={16} /> Relayed (TURN) Connection Fallback
+              </div>
+              <p style={{ color: '#fbbf24', margin: 0, fontSize: '0.78rem' }}>
+                Peers are blocked by strict cellular data NATs or VPN firewalls. Traffic is relayed via global servers (consuming relay quota). For maximum speeds and zero quota usage, connect both devices to local Wi-Fi or turn off corporate VPNs.
+              </p>
+            </div>
+          )}
+
           {/* Transfer stats & progress */}
           {(isTransferring || stats) && !transferDone && (
             <div className="progress-container">
@@ -250,6 +276,29 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
                     <span className="stat-value">{stats.timeRemaining}s</span>
                   </div>
                 </div>
+              )}
+
+              {/* Show Stream Chunks Toggle Button */}
+              <button
+                type="button"
+                onClick={() => setShowChunks(!showChunks)}
+                className="btn-primary"
+                style={{
+                  marginTop: '1rem',
+                  background: 'rgba(255, 255, 255, 0.02)',
+                  border: '1px solid var(--border-muted)',
+                  fontSize: '0.8rem',
+                  padding: '0.45rem 1rem',
+                  width: '100%',
+                  boxShadow: 'none',
+                  borderRadius: '12px'
+                }}
+              >
+                {showChunks ? 'Hide Stream Chunks' : 'Show Stream Chunks'}
+              </button>
+
+              {showChunks && stats && (
+                <ChunkVisualizer progress={stats.progress} isTransferring={isTransferring} />
               )}
             </div>
           )}

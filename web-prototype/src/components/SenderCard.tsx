@@ -3,6 +3,7 @@ import { UploadCloud, File, Copy, Check, Zap, RotateCcw, AlertTriangle, Radio } 
 import { P2PEngine } from '../lib/P2PEngine';
 import type { TransferStats, ConnectionStatus } from '../lib/P2PEngine';
 import { historyDb } from '../lib/historyDb';
+import { ChunkVisualizer } from './ChunkVisualizer';
 
 interface SenderCardProps {
   engine: P2PEngine;
@@ -26,6 +27,15 @@ export const SenderCard: React.FC<SenderCardProps> = ({
   const [isTransferring, setIsTransferring] = useState<boolean>(false);
   const [transferDone, setTransferDone] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string>('');
+  const [showChunks, setShowChunks] = useState<boolean>(false);
+
+  const handleConnectFirst = () => {
+    setErrorMsg('');
+    setTransferDone(false);
+    setStats(null);
+    const generatedCode = Math.floor(100000 + Math.random() * 900000).toString();
+    engine.initialize(generatedCode);
+  };
   const [isDragActive, setIsDragActive] = useState<boolean>(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -214,34 +224,120 @@ export const SenderCard: React.FC<SenderCardProps> = ({
         )}
       </div>
 
-      {!file ? (
-        // Dropzone Section
-        <div
-          className={`dropzone ${isDragActive ? 'active' : ''}`}
-          onDragEnter={handleDrag}
-          onDragOver={handleDrag}
-          onDragLeave={handleDrag}
-          onDrop={handleDrop}
-          onClick={() => fileInputRef.current?.click()}
-        >
-          <input
-            type="file"
-            ref={fileInputRef}
-            onChange={handleFileSelect}
-            style={{ display: 'none' }}
-          />
-          <div className="dropzone-icon">
-            <UploadCloud size={40} />
+      {/* 1. Initial State (No file, No room code) */}
+      {!file && !roomCode && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', flexGrow: 1, justifyContent: 'center' }}>
+          <div
+            className={`dropzone ${isDragActive ? 'active' : ''}`}
+            onDragEnter={handleDrag}
+            onDragOver={handleDrag}
+            onDragLeave={handleDrag}
+            onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleFileSelect}
+              style={{ display: 'none' }}
+            />
+            <div className="dropzone-icon">
+              <UploadCloud size={40} />
+            </div>
+            <div>
+              <p style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.25rem' }}>
+                Drag & Drop your file here
+              </p>
+              <p style={{ fontSize: '0.875rem' }}>or click to browse local files</p>
+            </div>
           </div>
-          <div>
-            <p style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.25rem' }}>
-              Drag & Drop your file here
-            </p>
-            <p style={{ fontSize: '0.875rem' }}>or click to browse local files</p>
-          </div>
+          
+          <button
+            type="button"
+            onClick={handleConnectFirst}
+            className="btn-primary"
+            style={{
+              background: 'rgba(255, 255, 255, 0.02)',
+              border: '1px solid var(--border-muted)',
+              fontSize: '0.9rem',
+              padding: '0.75rem',
+              width: '100%',
+              boxShadow: 'none',
+              borderRadius: '12px'
+            }}
+          >
+            Connect Device First (without file)
+          </button>
         </div>
-      ) : (
-        // Active Transfer Details
+      )}
+
+      {/* 2. Pre-connection or Connected slate (No file, Room code exists) */}
+      {!file && roomCode && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', flexGrow: 1, justifyContent: 'center' }}>
+          {(connectionStatus === 'disconnected' || connectionStatus === 'connecting') ? (
+            // Waiting for recipient
+            <div style={{ textAlign: 'center', margin: '1rem 0' }}>
+              <p style={{ marginBottom: '0.5rem', fontSize: '0.95rem' }}>
+                Waiting for recipient to connect. Share this key:
+              </p>
+              <div className="code-box">
+                <span className="code-text">{roomCode}</span>
+                <button onClick={handleCopyCode} className="btn-icon-copy">
+                  {copied ? <Check size={20} style={{ color: 'var(--accent-green)' }} /> : <Copy size={20} />}
+                </button>
+              </div>
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '1.5rem' }}>
+                Or select a file now to be ready for streaming:
+              </p>
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="btn-primary"
+                style={{ border: '1px solid var(--border-muted)', marginTop: '0.5rem', padding: '0.5rem 1.5rem', borderRadius: '12px' }}
+              >
+                Choose File
+              </button>
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleFileSelect}
+                style={{ display: 'none' }}
+              />
+            </div>
+          ) : (
+            // Connected but no file loaded yet
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <div
+                className={`dropzone ${isDragActive ? 'active' : ''}`}
+                onDragEnter={handleDrag}
+                onDragOver={handleDrag}
+                onDragLeave={handleDrag}
+                onDrop={handleDrop}
+                onClick={() => fileInputRef.current?.click()}
+                style={{ borderColor: 'var(--accent-green)', background: 'rgba(16, 185, 129, 0.02)' }}
+              >
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleFileSelect}
+                  style={{ display: 'none' }}
+                />
+                <div className="dropzone-icon" style={{ color: 'var(--accent-green)' }}>
+                  <UploadCloud size={40} />
+                </div>
+                <div>
+                  <p style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.25rem' }}>
+                    Direct P2P Link Established!
+                  </p>
+                  <p style={{ fontSize: '0.875rem' }}>Drop or select a file to stream instantly.</p>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 3. Active Transfer or Complete state (File loaded) */}
+      {file && (
         <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1 }}>
           {/* File Card Info */}
           <div className="file-card">
@@ -259,7 +355,7 @@ export const SenderCard: React.FC<SenderCardProps> = ({
             )}
           </div>
 
-          {/* Code Sharing Area */}
+          {/* Code Sharing Area (Standard loop) */}
           {!isTransferring && !transferDone && !errorMsg && (
             <div style={{ textAlign: 'center', margin: '1rem 0' }}>
               <p style={{ marginBottom: '0.5rem', fontSize: '0.9rem' }}>
@@ -298,6 +394,30 @@ export const SenderCard: React.FC<SenderCardProps> = ({
             </div>
           )}
 
+          {/* TURN Connection advisory warning */}
+          {connectionStatus === 'connected-turn' && !transferDone && (
+            <div style={{
+              background: 'rgba(245, 158, 11, 0.05)',
+              border: '1px solid rgba(245, 158, 11, 0.15)',
+              borderRadius: '16px',
+              padding: '1rem',
+              marginBottom: '1rem',
+              color: '#f59e0b',
+              fontSize: '0.8rem',
+              lineHeight: '1.4',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.5rem'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontWeight: 600 }}>
+                <AlertTriangle size={16} /> Relayed (TURN) Connection Fallback
+              </div>
+              <p style={{ color: '#fbbf24', margin: 0, fontSize: '0.78rem' }}>
+                Peers are blocked by strict cellular data NATs or VPN firewalls. Traffic is relayed via global servers (consuming relay quota). For maximum speeds and zero quota usage, connect both devices to local Wi-Fi or turn off corporate VPNs.
+              </p>
+            </div>
+          )}
+
           {/* Transfer stats & progress */}
           {(isTransferring || stats) && !transferDone && (
             <div className="progress-container">
@@ -323,6 +443,29 @@ export const SenderCard: React.FC<SenderCardProps> = ({
                     <span className="stat-value">{stats.timeRemaining}s</span>
                   </div>
                 </div>
+              )}
+
+              {/* Show Stream Chunks Toggle Button */}
+              <button
+                type="button"
+                onClick={() => setShowChunks(!showChunks)}
+                className="btn-primary"
+                style={{
+                  marginTop: '1rem',
+                  background: 'rgba(255, 255, 255, 0.02)',
+                  border: '1px solid var(--border-muted)',
+                  fontSize: '0.8rem',
+                  padding: '0.45rem 1rem',
+                  width: '100%',
+                  boxShadow: 'none',
+                  borderRadius: '12px'
+                }}
+              >
+                {showChunks ? 'Hide Stream Chunks' : 'Show Stream Chunks'}
+              </button>
+
+              {showChunks && stats && (
+                <ChunkVisualizer progress={stats.progress} isTransferring={isTransferring} />
               )}
             </div>
           )}
