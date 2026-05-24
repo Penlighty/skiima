@@ -89,6 +89,10 @@ export class P2PEngine {
   private unsubscribeRoom: (() => void) | null = null;
   private unsubscribeCandidates: (() => void) | null = null;
 
+  // Real-time paired peer info
+  public pairedPeerId: string = 'unknown';
+  public pairedPeerName: string = 'Anonymous Peer';
+
   // Callbacks for UI updates
   public onStatusChange?: (status: ConnectionStatus) => void;
   public onPeerIdReady?: (id: string) => void;
@@ -96,6 +100,7 @@ export class P2PEngine {
   public onProgress?: (stats: TransferStats) => void;
   public onTransferComplete?: (downloadUrl?: string) => void;
   public onError?: (error: string) => void;
+  public onPeerHandshake?: (peerId: string, peerName: string) => void;
 
   constructor() {}
 
@@ -467,6 +472,15 @@ export class P2PEngine {
       if (this.roomCode) {
         this.cleanupRoomDoc(this.roomCode);
       }
+
+      // Send bi-directional handshake to exchange peer details
+      const myPeerId = localStorage.getItem('skiima_peer_id') || 'unknown';
+      const myPeerName = localStorage.getItem('skiima_peer_name') || 'Anonymous Peer';
+      try {
+        dc.send(JSON.stringify({ type: 'handshake', peerId: myPeerId, peerName: myPeerName }));
+      } catch (err) {
+        console.warn('Failed to send local peer handshake:', err);
+      }
     };
 
     dc.onclose = () => {
@@ -526,6 +540,14 @@ export class P2PEngine {
           const control = JSON.parse(payload);
           if (control && control.type) {
             switch (control.type) {
+              case 'handshake':
+                this.pairedPeerId = control.peerId;
+                this.pairedPeerName = control.peerName;
+                if (this.onPeerHandshake) {
+                  this.onPeerHandshake(control.peerId, control.peerName);
+                }
+                break;
+
               case 'metadata':
                 receivedMetadata = control.data as FileMetadata;
                 receivedChunks = [];

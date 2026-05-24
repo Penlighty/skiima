@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { DownloadCloud, File, ArrowRight, RotateCcw, AlertTriangle, Radio, Download, Check } from 'lucide-react';
 import { P2PEngine } from '../lib/P2PEngine';
 import type { TransferStats, ConnectionStatus, FileMetadata } from '../lib/P2PEngine';
+import { historyDb } from '../lib/historyDb';
 
 interface ReceiverCardProps {
   engine: P2PEngine;
@@ -41,11 +42,31 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
       setTransferDone(true);
       setIsTransferring(false);
       setStats((prev) => prev ? { ...prev, progress: 100 } : null);
+      if (fileMetadata) {
+        historyDb.addShareHistoryItem({
+          fileName: fileMetadata.name,
+          fileSize: fileMetadata.size,
+          peerRole: 'receiver',
+          peerId: engine.pairedPeerId,
+          peerName: engine.pairedPeerName,
+          status: 'success'
+        });
+      }
     };
 
     engine.onError = (err) => {
       setErrorMsg(err);
       setIsTransferring(false);
+      if (fileMetadata) {
+        historyDb.addShareHistoryItem({
+          fileName: fileMetadata.name,
+          fileSize: fileMetadata.size,
+          peerRole: 'receiver',
+          peerId: engine.pairedPeerId,
+          peerName: engine.pairedPeerName,
+          status: 'failed'
+        });
+      }
     };
 
     engine.onStatusChange = (status) => {
@@ -55,7 +76,7 @@ export const ReceiverCard: React.FC<ReceiverCardProps> = ({
     return () => {
       // Keep engine persistent across frames
     };
-  }, [engine]);
+  }, [engine, fileMetadata]);
 
   const handleConnect = (e: React.FormEvent) => {
     e.preventDefault();

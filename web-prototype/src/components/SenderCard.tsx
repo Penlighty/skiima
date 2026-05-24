@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { UploadCloud, File, Copy, Check, Zap, RotateCcw, AlertTriangle, Radio } from 'lucide-react';
 import { P2PEngine } from '../lib/P2PEngine';
 import type { TransferStats, ConnectionStatus } from '../lib/P2PEngine';
+import { historyDb } from '../lib/historyDb';
 
 interface SenderCardProps {
   engine: P2PEngine;
@@ -40,11 +41,31 @@ export const SenderCard: React.FC<SenderCardProps> = ({
       setTransferDone(true);
       setIsTransferring(false);
       setStats((prev) => prev ? { ...prev, progress: 100 } : null);
+      if (file) {
+        historyDb.addShareHistoryItem({
+          fileName: file.name,
+          fileSize: file.size,
+          peerRole: 'sender',
+          peerId: engine.pairedPeerId,
+          peerName: engine.pairedPeerName,
+          status: 'success'
+        });
+      }
     };
 
     engine.onError = (err) => {
       setErrorMsg(err);
       setIsTransferring(false);
+      if (file) {
+        historyDb.addShareHistoryItem({
+          fileName: file.name,
+          fileSize: file.size,
+          peerRole: 'sender',
+          peerId: engine.pairedPeerId,
+          peerName: engine.pairedPeerName,
+          status: 'failed'
+        });
+      }
     };
 
     engine.onStatusChange = (status) => {
